@@ -1,0 +1,31 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.26.x', 'stable']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - run: test -z "$(gofmt -l .)"
+      - run: go mod tidy -diff
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - run: go test ./internal/handoff -run '^$' -fuzz FuzzParseAndVerify -fuzztime 10s
+      - run: scripts/check-consumer.sh
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
