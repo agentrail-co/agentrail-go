@@ -22,7 +22,7 @@ credentials cannot send backend OTLP. Keep both secrets on the server.
 After a release is tagged:
 
 ```sh
-go get github.com/agentrail-co/agentrail-go@v0.1.0
+go get github.com/agentrail-co/agentrail-go@v0.1.1
 ```
 
 ## HTTP startup
@@ -79,6 +79,31 @@ exports are excluded. If this middleware also runs on a collector server, use
 `IgnoreIncomingRequest` in that server's configuration to exclude its known
 ingestion routes. The SDK does not infer collector ingress from a Host header,
 port or path shared with an unrelated application.
+
+## Approximate IP location
+
+Set `Options.IncomingLocation` to a synchronous
+`func(*http.Request) (agentrail.IPLocation, error)` that reads trusted platform
+metadata or a local database loaded at startup. `IPLocation` contains `Country`,
+`Region`, `City` and `Source`. Country is a two-letter uppercase code; empty place
+fields mean unknown. Return `agentrail.IPLocation{}` for an unavailable location.
+Region and city are shortened to 128 UTF-16 units; empty values are omitted.
+Use `LocationDBIP`, `LocationCloudflare`, `LocationVercel` or
+`LocationConfigured` as the source. An empty source defaults to `LocationConfigured`.
+
+Resolve the original client address using your application's trusted-proxy
+configuration, skip private and reserved addresses, and never trust an arbitrary
+forwarded header. The SDK does not look up the exporter connection's IP or send
+client addresses to a geolocation service. The hook must return promptly and be
+safe for concurrent calls. Its value is captured before the handler runs and is
+shared only with that request's entry spans and nested milestones. Supporting
+spans and logs do not gain location attributes. The collector derives the
+observation time from each entry span's start time.
+
+Lookup errors, callback panics, invalid country codes and unsupported sources
+report `location_failed` through `OnError`; the application response continues
+without location. No hook means no location. Approximate locations describe a
+network exit, which can belong to a VPN, proxy or hosted agent rather than its user.
 
 ## Identity and milestones
 

@@ -209,6 +209,10 @@ describe("public Go SDK → real Argus protobuf receiver → persisted journeys"
         expect(events).toHaveLength(capture.expected.entries);
         for (const event of events) {
           expect(event.emittedBy).toBe("argus");
+          expect(event.actor.location).toEqual({
+            country: "US", region: "Washington", city: "Seattle", source: "source",
+            observedAt: new Date(event.start).toISOString(),
+          });
           expect(event.principal).toEqual({
             kind: "user",
             id: hash("synthetic-go-user"),

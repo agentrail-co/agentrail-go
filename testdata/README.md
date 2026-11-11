@@ -2,7 +2,7 @@
 
 `sdk-contract.json` is copied byte for byte from Argus
 `apps/api/sdk-contract.json` at revision
-`e0690df0ef5fdece67991016ed97d980ce489bad`.
+`d97952be2d32bbe34ec22bd54d391da52a3f143b`.
 
 Do not edit it in this repository. Update the receiver contract in Argus, copy
 its generated snapshot and record the revision here. The SDK uses upstream OTLP
