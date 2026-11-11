@@ -1,5 +1,6 @@
 {
   "notes": [
+    "Location is an annotation: a resent event retains its first stored actor.location even when a later lookup differs. Other event facts must match.",
     "What the Argus collector takes and how its engine reads a marker. Written by apps/api/test/sdk-contract.test.ts in argus.",
     "ingestRequest is the body of POST /ingest/events; browserCall is the body of POST /ingest/browser.",
     "The schemas are what the collector stores. It does not refuse a call for a field they do not name: it removes the field, stores none of it and counts it on the call. Anything else they do not allow, a new value of a field they name included, refuses the call.",
@@ -360,6 +361,75 @@
                     {
                       "type": "string",
                       "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "location": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "country": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[A-Z]{2}$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "region": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "city": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "dbip",
+                            "cloudflare",
+                            "vercel",
+                            "source"
+                          ]
+                        },
+                        "observedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        }
+                      },
+                      "required": [
+                        "country",
+                        "region",
+                        "city",
+                        "source",
+                        "observedAt"
+                      ],
+                      "additionalProperties": false
                     },
                     {
                       "type": "null"
@@ -741,6 +811,71 @@
               ],
               "additionalProperties": false
             },
+            "content": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "jsonrpcId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "isError": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "progressToken": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "capabilities": {
+                      "anyOf": [
+                        {
+                          "maxItems": 16,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "jsonrpcId",
+                    "isError",
+                    "progressToken",
+                    "capabilities"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "redactions": {
               "type": "array",
               "items": {
@@ -1097,6 +1232,9 @@
                 "egress": {
                   "type": "null"
                 },
+                "location": {
+                  "type": "null"
+                },
                 "userAgent": {
                   "type": [
                     "string",
@@ -1175,6 +1313,10 @@
                 "seen"
               ],
               "additionalProperties": false
+            },
+            "content": {
+              "default": null,
+              "type": "null"
             },
             "redactions": {
               "type": "array",
@@ -2182,6 +2324,13 @@
     "logAttributes": {
       "stableId": "agentrail.log.id",
       "bodyAllowed": "agentrail.log.body_allowed"
+    },
+    "locationAttributes": {
+      "country": "agentrail.client.location.country",
+      "region": "agentrail.client.location.region",
+      "city": "agentrail.client.location.city",
+      "source": "agentrail.client.location.source",
+      "observedAt": "entry span start time"
     },
     "limits": {
       "bodyBytes": 16777216,

@@ -47,7 +47,7 @@ import (
  sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 func TestPublicInstallation(t *testing.T){
- c,err:=agentrail.New(context.Background(),agentrail.Options{Collector:agentrail.CollectorOptions{Endpoint:"http://127.0.0.1:1/ingest/otlp",Secret:"synthetic-source"},HashKey:"synthetic-key",ServiceName:"consumer"});if err!=nil{t.Fatal(err)}
+ c,err:=agentrail.New(context.Background(),agentrail.Options{Collector:agentrail.CollectorOptions{Endpoint:"http://127.0.0.1:1/ingest/otlp",Secret:"synthetic-source"},HashKey:"synthetic-key",ServiceName:"consumer",IncomingLocation:func(*http.Request)(agentrail.IPLocation,error){return agentrail.IPLocation{Country:"US",Source:agentrail.LocationConfigured},nil}});if err!=nil{t.Fatal(err)}
  _ = c.Middleware(http.HandlerFunc(func(http.ResponseWriter,*http.Request){}))
  _ = c.Transport(nil)
  _ = captureslog.NewHandler(c,slog.Default().Handler())

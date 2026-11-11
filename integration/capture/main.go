@@ -73,6 +73,9 @@ func run(output string) (runErr error) {
 		Collector: agentrail.CollectorOptions{Endpoint: collector.URL, Secret: "synthetic-local-collector"},
 		HashKey:   "synthetic-go-receiver-hash-key", ServiceName: "synthetic-go-service", ServiceInstanceID: "synthetic-go-instance",
 		Queue: agentrail.QueueOptions{ScheduledDelay: time.Hour},
+		IncomingLocation: func(*http.Request) (agentrail.IPLocation, error) {
+			return agentrail.IPLocation{Country: "US", Region: "Washington", City: "Seattle", Source: agentrail.LocationConfigured}, nil
+		},
 		OnError: func(_ context.Context, e agentrail.CaptureError) {
 			mu.Lock()
 			captureErrors = append(captureErrors, e)

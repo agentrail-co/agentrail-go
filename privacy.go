@@ -123,6 +123,7 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 			identity = m.mark.identity
 		}
 		attrs = append(attrs, identity...)
+		attrs = append(attrs, m.state.location...)
 	}
 	if s.SpanKind() == trace.SpanKindServer {
 		attrs = append(attrs, attribute.Bool("agentrail.ingress.verified", m.state.verified))

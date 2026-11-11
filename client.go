@@ -25,6 +25,7 @@ type markKey struct{ client *Client }
 type requestState struct {
 	mu       sync.Mutex
 	identity []attribute.KeyValue
+	location []attribute.KeyValue
 	verified bool
 	links    []trace.Link
 }

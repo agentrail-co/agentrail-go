@@ -55,6 +55,13 @@ The gate intentionally requires full Go semantics. A successful HTTP response
 alone does not satisfy this test. Normal Go unit tests do not invoke Argus or
 Docker; run this gate separately for receiver/linkage release evidence.
 
+The location gate supplies a synthetic `IncomingLocation` result and verifies
+city, region, country, provenance and observation time on both reconstructed
+entries after repeated protobuf deliveries. It passed against Argus
+`d97952be2d32bbe34ec22bd54d391da52a3f143b`. Removing location export made the
+receiver assertion fail; restoring it passed. Older receivers without location
+support cannot satisfy this gate.
+
 The same gate passed with Node 24.22.2 against the isolated compatibility checkout
 at `e0690df0ef5fdece67991016ed97d980ce489bad` plus the local receiver change that
 recognizes `agentrail-go` alongside `agentrail-node`. Vitest reported one test

@@ -16,7 +16,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 type CollectorOptions struct {
 	Endpoint string
@@ -31,6 +31,24 @@ type LogsOptions struct {
 	ExcludeUncorrelated bool
 }
 
+// LocationSource identifies the trusted provider of an approximate IP location.
+type LocationSource string
+
+const (
+	LocationDBIP       LocationSource = "dbip"
+	LocationCloudflare LocationSource = "cloudflare"
+	LocationVercel     LocationSource = "vercel"
+	LocationConfigured LocationSource = "source"
+)
+
+// IPLocation describes a network exit, not a person's verified location.
+// Country is an uppercase two-letter code. Empty place fields mean unknown.
+// Values are copied at request admission; raw addresses are never included.
+type IPLocation struct {
+	Country, Region, City string
+	Source                LocationSource
+}
+
 // Options configures backend capture. Secrets are supplied by the application;
 // this package never reads environment variables implicitly.
 type Options struct {
@@ -38,11 +56,14 @@ type Options struct {
 	HashKey, ServiceName, ServiceInstanceID string
 	OutboundOrigins                         []string
 	IgnoreIncomingRequest                   func(*http.Request) bool
-	Logs                                    LogsOptions
-	Queue                                   QueueOptions
-	Propagator                              propagation.TextMapPropagator
-	OnError                                 func(context.Context, CaptureError)
-	endpointOrigin, endpointPath            string
+	// IncomingLocation uses trusted platform metadata or a preloaded local database.
+	// Return a zero value for unknown locations. Errors are reported without failing the request.
+	IncomingLocation             func(*http.Request) (IPLocation, error)
+	Logs                         LogsOptions
+	Queue                        QueueOptions
+	Propagator                   propagation.TextMapPropagator
+	OnError                      func(context.Context, CaptureError)
+	endpointOrigin, endpointPath string
 }
 
 // CaptureError describes loss or refused context without including customer data.
