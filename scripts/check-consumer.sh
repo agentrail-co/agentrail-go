@@ -32,7 +32,7 @@ export GONOSUMDB="github.com/agentrail-co/agentrail-go"
 # Isolate the SDK's module cache entry from any public version with the same tag.
 export GOMODCACHE="$scratch/modcache"
 go mod init example.com/agentrail-consumer
-go mod edit -go=1.26.0 -toolchain=go1.26.10
+go mod edit -go=1.26.0 -toolchain=go1.26.11
 go get "github.com/agentrail-co/agentrail-go@$(cat "$scratch/version")"
 cat > main_test.go <<'GO'
 package consumer
@@ -50,6 +50,7 @@ func TestPublicInstallation(t *testing.T){
  c,err:=agentrail.New(context.Background(),agentrail.Options{Collector:agentrail.CollectorOptions{Endpoint:"http://127.0.0.1:1/ingest/otlp",Secret:"synthetic-source"},HashKey:"synthetic-key",ServiceName:"consumer",IncomingLocation:func(*http.Request)(agentrail.IPLocation,error){return agentrail.IPLocation{Country:"US",Source:agentrail.LocationConfigured},nil}});if err!=nil{t.Fatal(err)}
  _ = c.Middleware(http.HandlerFunc(func(http.ResponseWriter,*http.Request){}))
  _ = c.Transport(nil)
+ c.Milestone(context.Background(),"plugin.invoked",agentrail.MilestoneContext{Surface:agentrail.SurfaceMCP,Kind:"mcp.tool",Performance:&agentrail.PerformanceContext{Environment:agentrail.EnvironmentTest,Plugin:&agentrail.PluginInvocation{BindingID:"22222222-2222-4222-8222-222222222222",InvocationID:"consumer"}}})
  _ = captureslog.NewHandler(c,slog.Default().Handler())
  _ = capturemcp.ToolHandler(c,"operation",func(context.Context,*sdk.CallToolRequest)(*sdk.CallToolResult,error){return &sdk.CallToolResult{},nil})
  if err:=c.Shutdown(context.Background());err!=nil{t.Fatal(err)}
@@ -57,7 +58,7 @@ func TestPublicInstallation(t *testing.T){
 GO
 go mod tidy
 go test -race ./...
-if rg '^replace' go.mod; then
+if grep -q '^replace' go.mod; then
   printf '%s\n' 'consumer unexpectedly uses replace' >&2
   exit 1
 fi

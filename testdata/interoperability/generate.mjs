@@ -38,3 +38,15 @@ for (const base of ['ß00000000000', 'ﬃ0000000000', 'ı000000000000', 'ſ00000
 }
 for (const raw of ['K0000000000000', 'İ0000000000000']) markers.push({ raw, valid: parseMarker(raw).valid });
 fs.writeFileSync('testdata/interoperability/markers.json', JSON.stringify(markers, null, 2) + '\n');
+
+// Operation references hash exactly as agentrail-node's performance.ts does:
+// HMAC-SHA256 over JSON.stringify(['agentrail.operation', namespaceId, instanceRef]).
+const operations = [
+  { name: 'node-test-vector', hashKey: 'synthetic-workspace-key', namespaceId: '11111111-1111-4111-8111-111111111111', instanceRef: 'synthetic-private-operation-attempt\u0000' },
+  { name: 'html-unicode-separators', hashKey: 'synthetic-密钥-🔑', namespaceId: '22222222-2222-4222-8222-222222222222', instanceRef: 'attempt/<>&="\\\t\b\f  /é/😀' },
+  { name: 'json-controls', hashKey: 'synthetic-second-key', namespaceId: '33333333-3333-4333-a333-333333333333', instanceRef: '\u0001\u001f\u000b\r\n' },
+];
+for (const o of operations) {
+  o.hash = createHmac('sha256', o.hashKey).update(JSON.stringify(['agentrail.operation', o.namespaceId, o.instanceRef])).digest('hex');
+}
+fs.writeFileSync('testdata/interoperability/operations.json', JSON.stringify(operations, null, 2) + '\n');

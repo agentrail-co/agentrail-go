@@ -29,6 +29,10 @@ type MilestoneContext struct {
 	Surface Surface
 	Kind    string
 	MCP     *MCPContext
+	// Performance is explicit evidence supplied after application authorization;
+	// it is never inferred from tool inputs or results, and applies only to this
+	// milestone's own span.
+	Performance *PerformanceContext
 }
 
 func validSurface(s Surface) bool {
@@ -57,6 +61,15 @@ func (c *Client) StartMilestone(ctx context.Context, name string, d MilestoneCon
 		copy := *d.MCP
 		d.MCP = &copy
 	}
+	var performance []attribute.KeyValue
+	if d.Performance != nil {
+		var ok bool
+		// Invalid evidence is omitted and reported; the milestone still runs.
+		if performance, ok = performanceAttributes(*d.Performance, c.options.HashKey); !ok {
+			c.report(ctx, "invalid_performance", "context", 1)
+		}
+		d.Performance = nil
+	}
 	if c.state(ctx) == nil {
 		external := trace.SpanContextFromContext(ctx)
 		s := &requestState{}
@@ -66,7 +79,7 @@ func (c *Client) StartMilestone(ctx context.Context, name string, d MilestoneCon
 		ctx = trace.ContextWithSpanContext(ctx, trace.SpanContext{})
 		ctx = context.WithValue(ctx, stateKey{c}, s)
 	}
-	m := &mark{name: name, details: d}
+	m := &mark{name: name, details: d, performance: performance}
 	links := []trace.Link{}
 	if !trace.SpanContextFromContext(ctx).IsValid() {
 		links = c.state(ctx).links

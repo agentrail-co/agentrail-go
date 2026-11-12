@@ -1,0 +1,23 @@
+[
+  {
+    "name": "node-test-vector",
+    "hashKey": "synthetic-workspace-key",
+    "namespaceId": "11111111-1111-4111-8111-111111111111",
+    "instanceRef": "synthetic-private-operation-attempt\u0000",
+    "hash": "634b53d8c61a1c16dee4933210cf468c43d1140c72ed83242d9339356770aa45"
+  },
+  {
+    "name": "html-unicode-separators",
+    "hashKey": "synthetic-密钥-🔑",
+    "namespaceId": "22222222-2222-4222-8222-222222222222",
+    "instanceRef": "attempt/<>&=\"\\\t\b\f  /é/😀",
+    "hash": "c44cdaf6f8b741d5032fa84b20b2dfb9fb420531720180d46b3ca96e6bb03fb0"
+  },
+  {
+    "name": "json-controls",
+    "hashKey": "synthetic-second-key",
+    "namespaceId": "33333333-3333-4333-a333-333333333333",
+    "instanceRef": "\u0001\u001f\u000b\r\n",
+    "hash": "c363d0a7f0a511a95f80b3fe1b366f35bfc1ad4961ef611a781941d61b2340fd"
+  }
+]

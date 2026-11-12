@@ -37,9 +37,10 @@ func (s *requestState) principal() []attribute.KeyValue {
 }
 
 type mark struct {
-	name     string
-	details  MilestoneContext
-	identity []attribute.KeyValue
+	name        string
+	details     MilestoneContext
+	identity    []attribute.KeyValue
+	performance []attribute.KeyValue
 }
 type spanMeta struct {
 	state *requestState

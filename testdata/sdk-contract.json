@@ -1,5 +1,6 @@
 {
   "notes": [
+    "Performance evidence requires source-granted operation permissions and an explicit operation hash/key ID. A resend cannot add or change evidence; the first authenticated producer is retained. Plugin calls without an operation reference remain unassigned. Unknown package releases are never replaced by the latest package.",
     "Location is an annotation: a resent event retains its first stored actor.location even when a later lookup differs. Other event facts must match.",
     "What the Argus collector takes and how its engine reads a marker. Written by apps/api/test/sdk-contract.test.ts in argus.",
     "ingestRequest is the body of POST /ingest/events; browserCall is the body of POST /ingest/browser.",
@@ -896,6 +897,190 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "performance": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "namespaceId": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                    },
+                    "operationHash": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "environment": {
+                      "type": "string",
+                      "enum": [
+                        "production",
+                        "test"
+                      ]
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "start",
+                        "progress",
+                        "terminal"
+                      ]
+                    },
+                    "eventName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120,
+                      "pattern": "^[a-zA-Z][a-zA-Z0-9_.:-]*$"
+                    },
+                    "plugin": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "bindingId": {
+                              "type": "string",
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                            },
+                            "invocationId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          },
+                          "required": [
+                            "bindingId",
+                            "invocationId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "namespaceId",
+                    "operationHash",
+                    "environment",
+                    "role",
+                    "eventName",
+                    "plugin"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "namespaceId": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                    },
+                    "operationHash": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "environment": {
+                      "type": "string",
+                      "enum": [
+                        "production",
+                        "test"
+                      ]
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "start",
+                        "progress",
+                        "terminal"
+                      ]
+                    },
+                    "eventName": {
+                      "type": "null"
+                    },
+                    "plugin": {
+                      "type": "object",
+                      "properties": {
+                        "bindingId": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                        },
+                        "invocationId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        }
+                      },
+                      "required": [
+                        "bindingId",
+                        "invocationId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "namespaceId",
+                    "operationHash",
+                    "environment",
+                    "role",
+                    "eventName",
+                    "plugin"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "namespaceId": {
+                      "type": "null"
+                    },
+                    "operationHash": {
+                      "type": "null"
+                    },
+                    "environment": {
+                      "type": "string",
+                      "enum": [
+                        "production",
+                        "test"
+                      ]
+                    },
+                    "role": {
+                      "type": "null"
+                    },
+                    "eventName": {
+                      "type": "null"
+                    },
+                    "plugin": {
+                      "type": "object",
+                      "properties": {
+                        "bindingId": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                        },
+                        "invocationId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        }
+                      },
+                      "required": [
+                        "bindingId",
+                        "invocationId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "namespaceId",
+                    "operationHash",
+                    "environment",
+                    "role",
+                    "eventName",
+                    "plugin"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
             }
           },
           "required": [
@@ -2319,7 +2504,14 @@
       "explicitStep": "agentrail.step",
       "stepSurface": "agentrail.step.surface",
       "stepKind": "agentrail.step.kind",
-      "verifiedIngress": "agentrail.ingress.verified"
+      "verifiedIngress": "agentrail.ingress.verified",
+      "operationNamespace": "agentrail.operation.namespace_id",
+      "operationHash": "agentrail.operation.hash",
+      "performanceEnvironment": "agentrail.environment",
+      "workflowRole": "agentrail.workflow.role",
+      "workflowEventName": "agentrail.workflow.event_name",
+      "pluginBinding": "agentrail.plugin.binding_id",
+      "pluginInvocation": "agentrail.plugin.invocation_id"
     },
     "logAttributes": {
       "stableId": "agentrail.log.id",
