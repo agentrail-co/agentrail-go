@@ -138,6 +138,7 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 		d := m.mark.details
 		name = m.mark.name
 		attrs = append(attrs, attribute.Bool("agentrail.step", true), attribute.String("agentrail.step.surface", string(d.Surface)), attribute.String("agentrail.step.kind", d.Kind))
+		attrs = append(attrs, m.mark.performance...)
 		if d.MCP != nil {
 			for _, v := range []struct {
 				k, v string

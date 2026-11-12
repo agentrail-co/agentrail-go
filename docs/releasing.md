@@ -1,20 +1,23 @@
 # Releasing agentrail-go
 
-The implementation is prepared as version 0.1.1. Tagging, pushing and production
+The implementation is prepared as version 0.2.0, the module's first tag (0.1.1
+was prepared but never tagged; 0.2.0 adds workflow and plugin evidence). Tagging, pushing and production
 deployment are separate operator steps; the build does not perform them.
 
-1. Merge and deploy the companion Argus Go SDK recognition change before customer
-   installation. Existing OTLP endpoints must be enabled. No database migration
+1. The companion Argus recognition of `agentrail-go` (argus #547) is on
+   production. Workflow and plugin evidence needs a collector that accepts the
+   `agentrail.operation.*`, `agentrail.workflow.*` and `agentrail.plugin.*`
+   attributes (argus #600 and later), also on production. Existing OTLP endpoints must be enabled. No database migration
    or new source enum is needed; backend credentials currently have kind `node`.
 2. Merge the SDK branch into the GitHub repository and run CI. Before tagging,
    run the real receiver gate against the deployed-code revision locally with
    disposable PostgreSQL. Confirm the compatibility matrix against the client.
-3. Confirm `Version` in `options.go` is `0.1.1`, then create and push annotated tag
-   `v0.1.1`. The release workflow verifies formatting/build/vet/race tests,
+3. Confirm `Version` in `options.go` is `0.2.0`, then create and push annotated tag
+   `v0.2.0`. The release workflow verifies formatting/build/vet/race tests,
    vulnerability checks and a separate consumer module before creating the
    GitHub release. Enable GitHub Actions with workflow permission to write releases.
 4. Go modules are distributed from version-control tags: there is no npm publish
-   or package registry token. Verify `go list -m github.com/agentrail-co/agentrail-go@v0.1.1`
+   or package registry token. Verify `go list -m github.com/agentrail-co/agentrail-go@v0.2.0`
    and `go get` from a fresh project after the public tag exists. The local
    consumer gate verifies an unpublished module through a temporary file proxy;
    it does not prove public proxy availability or a published tag.

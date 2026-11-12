@@ -1,6 +1,6 @@
 # Real Argus receiver gate
 
-Run from the Go SDK checkout with Go 1.26.10, Docker, and an Argus checkout with
+Run from the Go SDK checkout with Go 1.26.11, Docker, and an Argus checkout with
 its pinned Node 24/pnpm 11.20.0 dependencies installed:
 
 ```sh

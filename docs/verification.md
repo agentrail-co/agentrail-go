@@ -68,3 +68,18 @@ Git mutations used: `git switch -c feat/backend-sdk` in the SDK checkout;
 `git add` and `git commit` in each. Other Git commands were read-only status,
 branch/revision/log/remote inspection, diff checks and remote tag/head lookups.
 No pull, rebase, merge, amend, force push or push was performed.
+
+## 0.2.0 checks (workflow and plugin evidence, toolchain go1.26.11)
+
+Run on macOS arm64 with Go 1.26.10 (local), go1.26.11 (module toolchain) and
+the minimum Go 1.26.0: `gofmt`, `go mod tidy -diff`, `go build`, `go vet`,
+`go test -race -count=1 ./...`, `GOTOOLCHAIN=go1.26.0 go test ./...`,
+`scripts/check-consumer.sh` (now compiles a milestone with performance evidence
+from another module) and `govulncheck` under go1.26.10, go1.26.11 and go1.27.4:
+no vulnerabilities found. The real receiver gate passed against Argus `main`
+b2030266e. Mutations caught: `encoding/json` replacing the JSON.stringify
+encoder in the operation hash, a 32-character truncated digest, the raw
+reference exported, the namespace left out of the hash, evidence copied to
+children through request state, a plugin-only call given a workflow role, the
+namespace UUID unchecked, the event-name length unchecked, invalid evidence
+dropping the milestone, and invalid evidence not reported.

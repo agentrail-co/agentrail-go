@@ -43,6 +43,19 @@ func Hash(key, value string) string {
 	return hex.EncodeToString(digest[:16])
 }
 
+// OperationHash is the full HMAC-SHA256 hex of the UTF-8 JSON array
+// ["agentrail.operation", namespaceID, instanceRef], encoded as JSON.stringify
+// does, so every SDK hashes one operation reference to the same value.
+func OperationHash(key, namespaceID, instanceRef string) string {
+	b := []byte("[")
+	b = appendJSONString(b, "agentrail.operation")
+	b = append(b, ',')
+	b = appendJSONString(b, namespaceID)
+	b = append(b, ',')
+	b = appendJSONString(b, instanceRef)
+	return hex.EncodeToString(mac(key, append(b, ']')))
+}
+
 // Sign binds a trace context to the exact method and origin-form wire target.
 // issuedAt is an integer Unix timestamp in milliseconds, representable in JS.
 func Sign(key, traceparent, method, target string, issuedAt int64) (string, error) {

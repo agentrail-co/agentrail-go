@@ -253,3 +253,20 @@ func FuzzParseAndVerify(f *testing.F) {
 		}
 	})
 }
+
+// Fails if the operation hash stops encoding its input as JSON.stringify does
+// (for example encoding/json's HTML or U+2028 escaping), or truncates the digest.
+func TestOperationHashMatchesJavaScript(t *testing.T) {
+	var vectors []struct{ Name, HashKey, NamespaceID, InstanceRef, Hash string }
+	readJSON(t, "../../testdata/interoperability/operations.json", &vectors)
+	if len(vectors) == 0 {
+		t.Fatal("no operation vectors")
+	}
+	for _, v := range vectors {
+		t.Run(v.Name, func(t *testing.T) {
+			if got := OperationHash(v.HashKey, v.NamespaceID, v.InstanceRef); got != v.Hash {
+				t.Fatalf("OperationHash = %q, want %q", got, v.Hash)
+			}
+		})
+	}
+}

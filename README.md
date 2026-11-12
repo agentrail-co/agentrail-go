@@ -1,241 +1,442 @@
 # Agentrail for Go
 
-Backend journey evidence for Go: HTTP traces, application-verified hashed identity,
-explicit milestones, structured logs, and MCP operations. Sends OTLP HTTP/protobuf
-to Agentrail using the official OpenTelemetry exporters.
+`agentrail-go` adds your Go servers to the journeys Agentrail follows. When an
+AI agent or a person reaches your product, the steps they take on your backend —
+HTTP requests, MCP tool calls, the identity your application verified and the
+business milestones you name — are recorded and sent to Agentrail, which links
+them with what your edge and pages saw into one journey.
 
-Requires **Go 1.26+**. Tested dependency family: OpenTelemetry 1.47.0, log HTTP
-exporter 0.23.0, official MCP Go SDK 1.8.0. The module recommends toolchain 1.26.10.
-MCP and `slog` are separate opt-in imports in this module.
+It is built on OpenTelemetry's official Go SDK and exporters (OTLP over
+HTTP/protobuf). It registers no global providers and patches nothing
+process-wide: you add one middleware and wrap the HTTP clients you choose.
 
-## Before installing
+- **Go 1.26 or later.** Tested with OpenTelemetry 1.47.0 (log exporter 0.23.0)
+  and the official MCP Go SDK 1.8.0.
+- **Private by default.** Request and response bodies, tool arguments and
+  results, log messages and raw identities are never sent. See
+  [What is sent](#what-is-sent).
+- **Your application never fails because of it.** A capture problem goes to
+  your `OnError` callback, never to the caller.
 
-The receiver must expose `/ingest/otlp/v1/traces` and `/ingest/otlp/v1/logs` and
-recognize `agentrail-go` for SDK milestones and verified identity. The companion
-Argus compatibility change must be deployed first; older receivers accept HTTP
-spans but omit explicit milestones and verified identity. See [release steps](docs/releasing.md).
+## Contents
 
-Create a backend ingestion source (currently named **Node** in source setup).
-Use its source secret and the workspace hash key. Browser and edge source
-credentials cannot send backend OTLP. Keep both secrets on the server.
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [Verified identity](#verified-identity)
+- [Milestones](#milestones)
+- [Workflow and plugin evidence](#workflow-and-plugin-evidence)
+- [Structured logs with slog](#structured-logs-with-slog)
+- [MCP servers](#mcp-servers)
+- [Calls from your own servers](#calls-from-your-own-servers)
+- [Approximate IP location](#approximate-ip-location)
+- [An existing OpenTelemetry setup](#an-existing-opentelemetry-setup)
+- [Delivery, diagnostics and shutdown](#delivery-diagnostics-and-shutdown)
+- [What is sent](#what-is-sent)
+- [Options](#options)
+- [Node, Go and Python](#node-go-and-python)
+- [Development](#development) · [Releasing](#releasing) · [Licence](#licence)
 
-After a release is tagged:
+## Install
 
 ```sh
-go get github.com/agentrail-co/agentrail-go@v0.1.1
+go get github.com/agentrail-co/agentrail-go@v0.2.0
 ```
 
-## HTTP startup
+You need two values from your Agentrail workspace, and both stay on your
+servers — never put them in a page or a client app:
 
-Validate environment values before construction. See [the complete HTTP example](examples/http/main.go).
+- the **source secret** of a backend source. Backend sources are named
+  **Node server** in Agentrail; the Go, Node and Python SDKs all use them.
+  The setup screens create browser and edge sources today; ask Agentrail for
+  a backend source until they offer one.
+- the workspace **hash key**, which every SDK in the workspace shares so the
+  same person or operation hashes to the same value everywhere.
+
+## Quickstart
 
 ```go
-capture, err := agentrail.New(ctx, agentrail.Options{
-    Collector: agentrail.CollectorOptions{
-        Endpoint: "https://api.example.com/ingest/otlp",
-        Secret: sourceSecret,
-    },
-    HashKey: workspaceHashKey,
-    ServiceName: "orders-api",
-    OutboundOrigins: []string{"https://inventory.internal"},
-    OnError: func(ctx context.Context, issue agentrail.CaptureError) {
-        logger.ErrorContext(ctx, "Agentrail capture", "code", issue.Code,
-            "signal", issue.Signal, "count", issue.Count)
-    },
-})
-if err != nil { return err }
-server := &http.Server{Addr: ":8080", Handler: capture.Middleware(mux)}
-httpClient := &http.Client{Transport: capture.Transport(nil)}
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	agentrail "github.com/agentrail-co/agentrail-go"
+)
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	capture, err := agentrail.New(ctx, agentrail.Options{
+		Collector: agentrail.CollectorOptions{
+			Endpoint: os.Getenv("AGENTRAIL_ENDPOINT"), // https://<collector>/ingest/otlp
+			Secret:   os.Getenv("AGENTRAIL_SOURCE_SECRET"),
+		},
+		HashKey:         os.Getenv("AGENTRAIL_HASH_KEY"),
+		ServiceName:     "orders-api",
+		OutboundOrigins: []string{"https://inventory.example.com"},
+		OnError: func(ctx context.Context, issue agentrail.CaptureError) {
+			slog.ErrorContext(ctx, "agentrail capture", "code", issue.Code,
+				"signal", issue.Signal, "count", issue.Count)
+		},
+	})
+	if err != nil {
+		slog.Error("agentrail", "error", err) // invalid options: fix the configuration
+		os.Exit(1)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /checkout", checkout)
+
+	// Incoming requests: one middleware around the scope you want recorded.
+	server := &http.Server{Addr: ":8080", Handler: capture.Middleware(mux),
+		ReadHeaderTimeout: 5 * time.Second}
+
+	// Outgoing requests: wrap the clients whose calls belong to the journey.
+	inventory := &http.Client{Transport: capture.Transport(nil)}
+	_ = inventory
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server", "error", err)
+		}
+	}()
+	<-ctx.Done()
+
+	// Stop taking requests first, then flush what was captured.
+	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = server.Shutdown(shutdown)
+	_ = capture.Shutdown(shutdown)
+}
+
+func checkout(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusCreated) }
 ```
 
-`New` owns local tracer and logger providers; it registers no globals and performs
-no process-wide HTTP patching. Install the middleware once and use the wrapped
-HTTP client for participating outbound calls. Child OTel instrumentation must use
-the same provider; use the existing-provider mode below when composing libraries.
-`Transport` accepts a concrete `*http.Transport`, or nil for a shared standard network
-transport. This keeps propagation next to the network rather than allowing a
-nested tracing transport to re-add forbidden headers. Install other client
-middleware outside it.
+`New` validates its options and returns a `*ConfigurationError` when one is
+wrong; it never reads environment variables itself. Validate your own
+environment before calling it.
 
-The middleware preserves response streaming and optional writer interfaces. It
-records the admitted scope: installed after authentication, it does not claim to
-capture earlier authentication or parsing. Replace existing incoming `otelhttp`
-tracing for this scope; wrapping both creates duplicate HTTP entries. A Go
-`ServeMux` route pattern is captured when available.
+- **`Middleware`** records each incoming request, including the `ServeMux`
+  route pattern, and keeps streaming and optional writer interfaces working.
+  Install it once. If you already trace incoming requests with `otelhttp`,
+  replace that for this scope: wrapping both records every request twice.
+  Installed after authentication, it records only what runs after it.
+- **`Transport`** records outgoing calls. Pass your `*http.Transport`, or `nil`
+  for a shared standard one, and install other client middleware outside it.
+  Only the exact origins in `OutboundOrigins` receive Agentrail's signed trace
+  context; every other destination receives none, and redirects are checked at
+  each hop.
+- **Signed handoffs.** When `agentrail-edge` or another Agentrail SDK forwards
+  a request with a valid signature, the backend continues that trace. Anything
+  else — a public caller's `traceparent`, an expired or forged signature —
+  starts a fresh trace with a link to the caller's. Configure the same
+  workspace hash key everywhere, and keep clocks in sync: a signature is valid
+  for 60 seconds.
 
-Valid signed handoffs continue their trace. Public or refused context starts a
-fresh trace with a directional link to a valid caller trace. The signature binds
-the workspace key ID, traceparent, method, exact encoded path/query and a
-millisecond issue time valid for 60 seconds. Configure the same workspace key
-across participating edge/backend services and keep clocks synchronized. Apply
-path/query rewrites before signing. Forwarded headers and caller-declared IDs do
-not establish trust. Managed requests strip baggage, tracestate and Sentry trace
-headers; only exact allowed origins receive newly signed propagation. Redirects
-are checked at each destination, independently of an overridden Host header.
+Complete, compiling examples: [HTTP server](examples/http/main.go),
+[MCP server](examples/mcp/main.go),
+[existing OpenTelemetry](examples/existing-otel/main.go).
 
-Use `IgnoreIncomingRequest` for trusted internal callers or health endpoints.
-Validate any shared secret before configuring a matching callback. Collector
-exports are excluded. If this middleware also runs on a collector server, use
-`IgnoreIncomingRequest` in that server's configuration to exclude its known
-ingestion routes. The SDK does not infer collector ingress from a Host header,
-port or path shared with an unrelated application.
+## Verified identity
+
+After your application has authenticated the caller, say who it is:
+
+```go
+err := capture.Identify(r.Context(), agentrail.VerifiedIdentity{
+	Kind:         agentrail.PrincipalAgentRegistration,
+	ID:           agent.ID,
+	ActingUserID: agent.UserID, // optional
+})
+```
+
+IDs are hashed with the workspace hash key before they leave the process.
+Kinds: `PrincipalUser`, `PrincipalAgentRegistration`, `PrincipalAgentInstance`,
+`PrincipalOAuthClient`, `PrincipalAPIKey`.
+
+- Only `Identify` sets identity. Headers, OpenTelemetry `user.id` attributes
+  and what an MCP client says about itself are never trusted as identity.
+- Repeating the same identity does nothing. A different one records an
+  `auth.identity` milestone and keeps the first.
+- Identity belongs to the request's context: goroutines that carry it share it,
+  other requests never do. Spans that ended before `Identify` stay anonymous.
+- `Identify` returns an error for an invalid kind or ID. Called outside a
+  recorded request, it reports `identity_outside_request` to `OnError`.
+
+## Milestones
+
+Name the business steps that matter, with stable labels — never IDs or
+arguments:
+
+```go
+// An instant step:
+capture.Milestone(ctx, "cart.viewed",
+	agentrail.MilestoneContext{Surface: agentrail.SurfaceCustom, Kind: "cart.viewed"})
+
+// A scoped step: returns your error unchanged, and re-panics your panic.
+err := capture.WithMilestone(ctx, "checkout.confirm",
+	agentrail.MilestoneContext{Surface: agentrail.SurfaceCustom, Kind: "checkout.confirm"},
+	func(ctx context.Context) error { return confirmOrder(ctx) })
+
+// Or start and end it yourself:
+ctx, end := capture.StartMilestone(ctx, "refund.issue",
+	agentrail.MilestoneContext{Surface: agentrail.SurfaceCustom, Kind: "refund.issue"})
+err = issueRefund(ctx)
+end(err)
+```
+
+Names and kinds are 1–256 characters. A milestone outside a recorded request
+starts its own. Invalid input reports `invalid_milestone` and your code keeps
+running.
+
+## Workflow and plugin evidence
+
+To track real workflow attempts — for example a delivery requested through a
+ChatGPT or Claude plugin and completed by your backend — attach an operation
+reference after your application has authorized the operation:
+
+```go
+capture.Milestone(ctx, "delivery.requested", agentrail.MilestoneContext{
+	Surface: agentrail.SurfaceCustom,
+	Kind:    "business.event",
+	Performance: &agentrail.PerformanceContext{
+		Environment: agentrail.EnvironmentProduction,
+		Operation: &agentrail.AuthorizedOperation{
+			NamespaceID: operationNamespaceID, // from Agentrail
+			InstanceRef: delivery.AttemptID,   // hashed locally, never sent
+			Role:        agentrail.RoleStart,
+		},
+		EventName: "delivery.requested",
+		Plugin: &agentrail.PluginInvocation{
+			BindingID:    pluginBindingID, // from Agentrail
+			InvocationID: invocationID,    // opaque, for example a random UUID
+		},
+	},
+})
+```
+
+- Use a new `InstanceRef` for each business attempt, and the same one for its
+  start, progress, plugin calls and outcome — across services, which must share
+  the workspace hash key and namespace.
+- Send `RoleTerminal` with your configured success event **only after your
+  backend has verified the result**. A tool returning, or an HTTP 200, is not
+  completion; the SDK never infers it.
+- A plugin call with no authorized operation sends only `Environment` and
+  `Plugin`: it shows as plugin activity without workflow credit.
+- Production and test are kept apart by `Environment`.
+- The reference is sent only as an HMAC-SHA256 of
+  `["agentrail.operation", namespaceId, instanceRef]` keyed by the hash key —
+  the same value the Node and Python SDKs produce. Never put raw references in
+  names, invocation IDs or log fields.
+- Evidence the collector would refuse is dropped from that milestone and
+  reported as `invalid_performance`; the milestone and your code still run.
+  The exact rules are in [docs/how-it-works.md](docs/how-it-works.md#workflow-and-plugin-evidence).
+- Evidence applies to that milestone only; nothing inside it inherits it.
+
+The collector accepts this evidence from sources Agentrail has granted the
+namespace's permissions.
+
+## Structured logs with slog
+
+```go
+import agentrailslog "github.com/agentrail-co/agentrail-go/slog"
+
+logger := slog.New(agentrailslog.NewHandler(capture, existingHandler))
+logger.ErrorContext(r.Context(), "payment declined", "event.name", "checkout.failed")
+
+// Or record one directly:
+capture.Log(r.Context(), agentrail.StructuredLog{
+	SeverityNumber: 17, ErrorType: "PaymentDeclined", EventName: "checkout.failed",
+})
+```
+
+The handler passes every record to your handler unchanged. Agentrail receives
+the severity, error type, event name, a stable record ID and the exact span it
+belongs to — use the `…Context` logger calls so it can tell. Message text and
+attributes are not sent unless you list them:
+
+```go
+Logs: agentrail.LogsOptions{
+	IncludeFields:       []string{"message", "order.status"}, // grouped keys use dots
+	ExcludeUncorrelated: true, // drop logs outside recorded requests
+},
+```
+
+Selected fields must be scalars, and are sent as JSON of at most 4,096
+characters. Never select credentials or customer content. Logs never link
+journeys on their own; they add detail to steps that are already linked.
+
+## MCP servers
+
+Wrap the handlers you register with the official MCP Go SDK:
+
+```go
+import (
+	capturemcp "github.com/agentrail-co/agentrail-go/mcp"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+sdk.AddTool(server, &sdk.Tool{Name: "confirm_order"},
+	capturemcp.Tool(capture, "confirm_order", confirmOrder))
+// capturemcp.ToolHandler, capturemcp.Resource and capturemcp.Prompt wrap the others.
+```
+
+Each call becomes an MCP step nested in its HTTP request (or its own step
+outside one), with the registered name, method, client name and version, and
+protocol. Arguments, results, prompt text and resource URIs are never sent;
+pass a stable registered name, not the caller's URI. Your result, error and
+panic are returned unchanged, and a tool result with `IsError` marks the step
+failed. Mount the MCP handler behind `capture.Middleware` and your
+authentication. Tested with SDK 1.8.0 on the 2026-07-28 protocol (stateless
+Streamable HTTP), 2025-11-25 and 2024-11-05 (SSE).
+
+## Calls from your own servers
+
+Requests your own services send — health checks, internal jobs — are not
+visitors or agents. Leave them out, and check something only your servers can
+send, such as a shared secret. A user agent or an address is what any caller
+can claim:
+
+```go
+internalSecret := os.Getenv("INTERNAL_SECRET")
+if internalSecret == "" {
+	return errors.New("INTERNAL_SECRET is not set")
+}
+options.IgnoreIncomingRequest = func(r *http.Request) bool {
+	return subtle.ConstantTimeCompare(
+		[]byte(r.Header.Get("X-My-Internal")), []byte(internalSecret)) == 1
+}
+```
+
+Check the secret is set first: left empty, a request without the header would
+match, and nothing would be recorded. The SDK's own calls to the collector are
+always excluded.
 
 ## Approximate IP location
 
-Set `Options.IncomingLocation` to a synchronous
-`func(*http.Request) (agentrail.IPLocation, error)` that reads trusted platform
-metadata or a local database loaded at startup. `IPLocation` contains `Country`,
-`Region`, `City` and `Source`. Country is a two-letter uppercase code; empty place
-fields mean unknown. Return `agentrail.IPLocation{}` for an unavailable location.
-Region and city are shortened to 128 UTF-16 units; empty values are omitted.
-Use `LocationDBIP`, `LocationCloudflare`, `LocationVercel` or
-`LocationConfigured` as the source. An empty source defaults to `LocationConfigured`.
-
-Resolve the original client address using your application's trusted-proxy
-configuration, skip private and reserved addresses, and never trust an arbitrary
-forwarded header. The SDK does not look up the exporter connection's IP or send
-client addresses to a geolocation service. The hook must return promptly and be
-safe for concurrent calls. Its value is captured before the handler runs and is
-shared only with that request's entry spans and nested milestones. Supporting
-spans and logs do not gain location attributes. The collector derives the
-observation time from each entry span's start time.
-
-Lookup errors, callback panics, invalid country codes and unsupported sources
-report `location_failed` through `OnError`; the application response continues
-without location. No hook means no location. Approximate locations describe a
-network exit, which can belong to a VPN, proxy or hosted agent rather than its user.
-
-## Identity and milestones
-
 ```go
-// Only after the application has authenticated this identity:
-err := capture.Identify(r.Context(), agentrail.VerifiedIdentity{
-    Kind: agentrail.PrincipalAgentRegistration,
-    ID: authenticatedAgentID,
-    ActingUserID: authenticatedUserID,
-})
-if err != nil { return err }
-err = capture.WithMilestone(r.Context(), "checkout.confirm",
-    agentrail.MilestoneContext{
-        Surface: agentrail.SurfaceCustom, Kind: "checkout.confirm",
-    }, func(ctx context.Context) error { return confirmOrder(ctx) })
+// Only behind Cloudflare, which sets CF-IPCountry and strips a caller's copy.
+options.IncomingLocation = func(r *http.Request) (agentrail.IPLocation, error) {
+	country := r.Header.Get("CF-IPCountry")
+	if country == "" || country == "XX" || country == "T1" { // unknown, Tor
+		return agentrail.IPLocation{}, nil
+	}
+	return agentrail.IPLocation{Country: country, Source: agentrail.LocationCloudflare}, nil
+}
 ```
 
-`Identify` hashes IDs before export. Supported principal kinds are user,
-agent_registration, agent_instance, oauth_client and api_key. Repeating the same
-assertion has no effect; a conflicting assertion records an auth milestone and
-preserves the original principal. Shared request state is safe across child
-goroutines. Spans already ended before authentication cannot acquire a later
-identity assertion. Work must retain the provided context; unrelated contexts
-never inherit identity. Identify outside a managed operation reports a capture
-issue. Invalid configuration/identity inputs return an error.
+The hook runs for each recorded request. Read trusted platform metadata or a
+local database loaded at startup — no network calls — and never an arbitrary
+forwarded header. `Country` is a two-letter uppercase code; `Region` and `City`
+are optional; `Source` is `LocationCloudflare`, `LocationVercel`,
+`LocationDBIP` or `LocationConfigured`. Return `agentrail.IPLocation{}` when
+there is no location. An error or an invalid value reports `location_failed`
+and the request continues without one. The address itself is never sent, and a
+location describes a network exit — possibly a VPN or a hosted agent.
 
-`Milestone` records an instant step. `StartMilestone` returns a child context and
-an end function taking the application error. `WithMilestone` scopes a callback,
-returns its original error and rethrows its original panic. Names/kinds must be
-stable non-sensitive labels of 1–256 UTF-16 units, matching the collector limits.
-Invalid milestone input reports a capture issue and leaves application work
-running. Standalone milestones create their own managed scope.
+## An existing OpenTelemetry setup
 
-## Structured logs
-
-```go
-logger := slog.New(agentrailslog.NewHandler(capture, existingHandler))
-logger.ErrorContext(r.Context(), "private message", "err", applicationError,
-    "event.name", "checkout.failed")
-capture.Log(r.Context(), agentrail.StructuredLog{
-    SeverityNumber: 17, ErrorType: "PaymentDeclined", EventName: "checkout.failed",
-})
-```
-
-Import the adapter as `agentrailslog "github.com/agentrail-co/agentrail-go/slog"`.
-Use context-bearing logger calls for exact span correlation. The adapter
-preserves the existing handler's output, groups, filtering and errors.
-`LogValuer` attributes are evaluated only by the application handler and are
-excluded from capture.
-
-Default exports contain severity, error type, event name, stable per-record ID
-and exact span correlation. Message text, arbitrary attributes, exception
-messages, request bodies and raw identities stay out. Supporting span names are
-neutralized. URL evidence retains only valid Agentrail `h` markers; oversized
-optional URLs are omitted without losing the entry. Resource metadata is reduced
-to service/component/hash-key identity, including for external OTel log records.
-Other customer exporters retain their original input.
-
-Message fields require `Logs: agentrail.LogsOptions{IncludeFields: []string{"message"}}`.
-Only explicitly selected scalar fields are encoded, in allowlist order, as valid
-JSON bounded to 4,096 UTF-16 units including escaping and keys. Grouped slog keys
-use dot notation. Do not select credentials or sensitive customer content. Set
-`ExcludeUncorrelated: true` to omit logs outside managed requests. Generic logs
-never create journey proof. Choose non-sensitive service names, routes, operation
-names and user agents, as those remain customer-controlled context.
-
-## Existing OpenTelemetry
-
-Construct processors before the customer's provider:
+If your service already builds its own tracer provider, add Agentrail's parts
+while you construct it:
 
 ```go
 processors, err := agentrail.NewProcessors(ctx, options)
-if err != nil { return err }
+if err != nil {
+	return err
+}
 provider := sdktrace.NewTracerProvider(
-    sdktrace.WithSampler(processors.Sampler(customerSampler)),
-    sdktrace.WithSpanProcessor(customerProcessor),
-    sdktrace.WithSpanProcessor(processors.SpanProcessor),
+	sdktrace.WithSampler(processors.Sampler(yourSampler)),
+	sdktrace.WithSpanProcessor(yourProcessor),
+	sdktrace.WithSpanProcessor(processors.SpanProcessor),
 )
 capture, err := processors.Bind(provider)
-if err != nil { return err }
-// Add processors.LogProcessor when constructing the customer LoggerProvider.
-// Register processors.Propagator in any retained propagation integration.
+// Add processors.LogProcessor to your LoggerProvider, and use
+// processors.Propagator wherever you register a propagator.
 ```
 
-See [the compiling composition example](examples/existing-otel/main.go).
-`Bind` is one-time and explicit; the factory never discovers/replaces a global
-provider. Retain customer resource configuration and other instrumentation.
-The sampler wrapper turns dropped managed spans into record-only spans while
-preserving the customer's sampled flag. Sampled-only exporters keep their
-sampling; exporters that emit record-only spans may observe additional records.
-A processor alone cannot recover spans already dropped by a sampler. Managed
-HTTP wrappers perform request-aware signature verification; a propagator alone
-cannot verify the method or target. Unmanaged propagation delegates to the
-configured base propagator. Agentrail shutdown never shuts down a customer provider.
+The sampler keeps the spans Agentrail needs as record-only, without changing
+what your sampler decided or what your exporters receive. Your providers stay
+yours: `capture.Shutdown` never shuts them down. See the
+[compiling example](examples/existing-otel/main.go).
 
-## MCP
+## Delivery, diagnostics and shutdown
 
-Import `github.com/agentrail-co/agentrail-go/mcp` and wrap public registration
-callbacks with `Tool`, `ToolHandler`, `Resource`, or `Prompt`. See
-[the MCP example](examples/mcp/main.go). Pass stable registration names, never
-caller-supplied resource URIs. The original typed output, result, error and panic
-are preserved. Tool `IsError` results mark failure without replacing the result.
+Each signal (traces, logs) has a bounded in-memory queue: 2,048 records, sent
+in batches of 128 every second, with a 5-second export timeout and 10 seconds
+to flush or shut down. Change them with `Options.Queue`. Retryable collector
+responses are retried within the export timeout; nothing is written to disk.
 
-Tests exercise official SDK 1.8.0 modern 2026-07-28 and legacy 2025-11-25 protocols
-on memory/Streamable HTTP, and legacy 2024-11-05 SSE. Modern HTTP requires the
-SDK's stateless server mode. Client/protocol metadata comes from the SDK's public
-request methods; it is untrusted descriptive context. No cross-caller initialize
-cache is kept. Tool arguments, outputs, prompt text and resource URIs are excluded.
-Each operation becomes a nested MCP milestone or its own scope outside HTTP.
+- `capture.Flush(ctx)` waits for the records accepted so far to be attempted.
+- `capture.Shutdown(ctx)` flushes once and stops; call it after your server
+  has stopped taking requests. It is final, and safe to call twice.
+- `capture.Diagnostics()` reports accepted, exported, dropped and pending
+  records per signal.
+- `OnError` receives each problem — overflow, export failure, a refused
+  handoff, invalid input — with a code and count, never customer data. It
+  runs synchronously, so return quickly. Log with the context it gives you:
+  that context is not captured again.
 
-## Delivery and shutdown
+## What is sent
 
-Per signal defaults: 2,048 queued/in-flight records, 128 records per batch, a
-one-second schedule, five-second export timeout and ten-second flush/shutdown
-deadlines. `QueueOptions` overrides must be positive; batch size must fit capacity
-and the collector's 10,000-record limit. Flush/shutdown deadlines must cover the
-export timeout. One batch exports at a time per signal; official exporters retry
-retryable responses within the export deadline. Permanent rejections and exhausted
-retries are reported and dropped. Memory queues have no disk persistence.
+| Sent | Never sent |
+| --- | --- |
+| Method, route pattern, status, timing, span relationships | Request and response bodies, headers, cookies |
+| URL path, with only Agentrail's own `h` markers kept in the query | Other query parameters |
+| HMAC hashes of verified identities and operation references | Raw IDs, emails, operation references |
+| MCP operation name, method, client name/version, protocol | Tool arguments, results, prompt text, resource URIs |
+| Log severity, error type, event name, record ID | Log messages and attributes, unless you list them |
+| Service name and instance, SDK name and version, hash key ID | The hash key, the source secret |
+| Country, region, city when you supply them | IP addresses |
 
-Stop accepting application requests, wait for handlers, then call
-`capture.Shutdown(ctx)`. Shutdown is terminal and idempotent. Calls to `Flush`
-wait for attempts for records already accepted when the call starts; successful
-completion does not guarantee delivery. Inspect `Diagnostics()` and `OnError`
-for overflow, export failure, deadlines and rejected context. Diagnostics report
-accepted/exported/dropped/pending records; dropped also includes refused enqueue
-attempts. SDK issues never replace an application response.
+Service names, route patterns, milestone names and user agents come from your
+application: keep them free of personal data.
 
-`OnError` runs synchronously outside queue locks and must return promptly. It
-receives a capture-suppressed context: pass that context to your logger to prevent
-recursive telemetry. Callback panics are contained with a safe stderr
-fallback. An application callback that blocks cannot be forcibly terminated.
+## Options
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `Collector.Endpoint` | yes | The collector's OTLP base URL, ending `/ingest/otlp` |
+| `Collector.Secret` | yes | The backend source secret |
+| `HashKey` | yes | The workspace hash key |
+| `ServiceName` | yes | A stable, non-sensitive service name |
+| `ServiceInstanceID` | no | This instance, when you run several |
+| `OutboundOrigins` | no | Exact origins (`https://host[:port]`) that receive signed trace context |
+| `IgnoreIncomingRequest` | no | Leave a request out ([your own servers](#calls-from-your-own-servers)) |
+| `IncomingLocation` | no | Approximate location ([IP location](#approximate-ip-location)) |
+| `Logs` | no | `IncludeFields`, `ExcludeUncorrelated` |
+| `Queue` | no | Queue size, batch size and timeouts |
+| `Propagator` | no | Your existing propagator, used for work outside Agentrail's requests |
+| `OnError` | no | Capture problems; defaults to standard error |
+
+## Node, Go and Python
+
+The three backend SDKs offer the same capture, send the same evidence and
+interoperate: a signed handoff from one continues in another, and they hash
+identities and operations identically.
+
+| | Node — [`agentrail-node`](https://github.com/agentrail-co/agentrail-js/tree/main/packages/node) | Go — `agentrail-go` | Python — [`agentrail-python`](https://github.com/agentrail-co/agentrail-python) |
+| --- | --- | --- | --- |
+| Incoming HTTP | `node:http` (any framework on it) | `net/http` middleware | ASGI and WSGI middleware |
+| Outgoing HTTP | `http`, `fetch` | `http.RoundTripper` | `httpx`, `requests` |
+| Signed handoffs | ✓ | ✓ | ✓ |
+| Verified identity | ✓ | ✓ | ✓ |
+| Milestones | ✓ | ✓ | ✓ |
+| Workflow and plugin evidence | ✓ | ✓ | ✓ |
+| Structured logs | Pino, OpenTelemetry logs | `slog`, OpenTelemetry logs | `logging`, OpenTelemetry logs |
+| MCP | `@modelcontextprotocol/server` | official Go SDK | official `mcp` SDK |
+| Existing OpenTelemetry | ✓ | ✓ | ✓ |
+| IP location, own-server exclusion | ✓ | ✓ | ✓ |
+| Runtime | Node 22+ | Go 1.26+ | Python 3.10+ |
+
+The browser script and the edge recorder are JavaScript only:
+[`agentrail-browser`, `agentrail-edge`](https://github.com/agentrail-co/agentrail-js).
 
 ## Development
 
@@ -243,18 +444,25 @@ fallback. An application callback that blocks cannot be forcibly terminated.
 go build ./...
 go vet ./...
 go test -race ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 go test ./internal/handoff -run '^$' -fuzz FuzzParseAndVerify -fuzztime 10s
 scripts/check-consumer.sh
-# With a compatible private Argus checkout, installed dependencies and Docker:
+# Against a real Agentrail receiver (needs an Argus checkout, its dependencies and Docker):
 ARGUS_DIR=/path/to/argus integration/run.sh
 ```
 
-The receiver gate uses synthetic data and disposable PostgreSQL; it creates and
-removes a temporary test file in the supplied Argus checkout. See
-[integration/README.md](integration/README.md) and [contract provenance](testdata/README.md).
+How each part behaves, in detail: [docs/how-it-works.md](docs/how-it-works.md).
+Cross-language test vectors: [testdata](testdata/README.md). Receiver gate:
+[integration](integration/README.md).
 
-## License
+## Releasing
 
-Apache-2.0. See [LICENSE](LICENSE).
+Go modules are served from Git tags, so there is no registry to publish to.
+`Version` in `options.go` must match the tag: the release workflow checks it,
+runs the full suite, the consumer gate and `govulncheck`, then creates the
+GitHub release. Steps: [docs/releasing.md](docs/releasing.md). Before 1.0, a
+minor version may change the API.
 
-Evidence and remaining operator checks: [verification](docs/verification.md).
+## Licence
+
+[Apache-2.0](LICENSE).
