@@ -111,3 +111,13 @@ without a JSON-RPC answer is `McpTransportRejected`, and payload and batch
 limits are the contract's `mcpPayloadBytes` and `exportBatchBytes`. Mutations
 caught: each of those reverted, a limit drifting from the contract, and a
 transport span named with a trailing colon.
+
+Review fixes (contract SHA-256 `9aa9d124…`): a repeated JSON-RPC id ends the
+pending call it replaces, and `Handler` cleans up in a defer, so nothing stays
+registered (tests count the registry after 20 duplicate-id batches, a
+long-lived connection and a panicking handler); `Handler` reads a POST body
+only as the SDK does (a 40 MiB POST and a cross-site POST read no more than
+the bare SDK, which read 4,194,305 bytes of the first); pending calls keep params only with
+payload capture; resource span names drop userinfo, query and fragment. Each
+test failed before its fix. Sizes are still measured by re-encoding, which is
+the contract's definition (the SDK's encoding, without whitespace).

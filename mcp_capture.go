@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"regexp"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
@@ -85,6 +86,27 @@ func mcpSpanName(method, name string) string {
 	}
 	return bounded("mcp."+method+":"+name, 256)
 }
+
+// resourceName is a resource URI without its userinfo, query or fragment,
+// where credentials and tokens travel. It cuts at the delimiters rather than
+// parsing, so a URI net/url would refuse is still stripped.
+func resourceName(uri string) string {
+	if i := strings.IndexAny(uri, "?#"); i >= 0 {
+		uri = uri[:i]
+	}
+	scheme, rest, ok := strings.Cut(uri, "://")
+	if !ok {
+		return uri
+	}
+	authority, path := rest, ""
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		authority, path = rest[:i], rest[i:]
+	}
+	if i := strings.LastIndexByte(authority, '@'); i >= 0 {
+		authority = authority[i+1:]
+	}
+	return scheme + "://" + authority + path
+}
 func mcpMethodAttr(method string) []attribute.KeyValue {
 	if !mcpMethod.MatchString(method) {
 		return nil
@@ -123,7 +145,11 @@ type transportSpan struct {
 
 func (c *Client) mcpTransport(ctx context.Context, call mcpspan.Call) mcpspan.Span {
 	m := &mcpMark{layer: "transport", step: true}
-	ctx, span := c.start(ctx, mcpSpanName(call.Method, call.Target), MilestoneContext{Surface: SurfaceMCP, Kind: mcpKind(call.Method)}, m)
+	name := call.Target
+	if call.Method == "resources/read" {
+		name = resourceName(name)
+	}
+	ctx, span := c.start(ctx, mcpSpanName(call.Method, name), MilestoneContext{Surface: SurfaceMCP, Kind: mcpKind(call.Method)}, m)
 	if span == nil {
 		return noMCPSpan{}
 	}

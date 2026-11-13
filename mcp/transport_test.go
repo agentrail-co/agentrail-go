@@ -461,6 +461,35 @@ func TestOutOfRangeErrorCodeIsOmitted(t *testing.T) {
 	}
 }
 
+// This fails if a resources/read span name carries the requested URI's
+// userinfo, query or fragment, where credentials and tokens travel.
+func TestResourceSpanNameDropsCredentialsQueryAndFragment(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, receiver := newCapture(t)
+	server := sdk.NewServer(&sdk.Implementation{Name: "synthetic-server", Version: "1.0"}, nil)
+	client := sdk.NewClient(&sdk.Implementation{Name: "synthetic-caller", Version: "2.3"}, nil)
+	session, err := client.Connect(ctx, serve(t, ctx, c, server, "memory"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	for _, uri := range []string{"https://user:private-secret@host.example/docs/a?token=private-token#private-part", "file:///notes/b.txt?private-q", "urn:x:private-c#private-d"} {
+		if _, err := session.ReadResource(ctx, &sdk.ReadResourceParams{URI: uri}); err == nil {
+			t.Fatalf("%s: unknown resource read", uri)
+		}
+	}
+	got := spans(t, c, receiver)
+	for _, name := range []string{"mcp.resources/read:https://host.example/docs/a", "mcp.resources/read:file:///notes/b.txt", "mcp.resources/read:urn:x:private-c"} {
+		named1(t, got, name)
+	}
+	for _, s := range got {
+		if strings.Contains(s.Name, "private-secret") || strings.Contains(s.Name, "private-token") || strings.Contains(s.Name, "private-q") || strings.Contains(s.Name, "private-d") {
+			t.Fatalf("span name %q", s.Name)
+		}
+	}
+}
+
 // rawPost sends one JSON-RPC message to a Streamable HTTP endpoint and
 // returns the status and the session ID the answer issued.
 func rawPost(t *testing.T, ctx context.Context, endpoint, session, protocol string, id int, method string, params any) (int, string) {

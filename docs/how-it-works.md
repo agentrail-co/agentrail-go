@@ -170,8 +170,8 @@ span and one step (`agentrail.step.surface` `mcp`; kind `tool.call` for
 `tools/call`, `mcp.<method>` otherwise), including `initialize`, `tools/list`,
 `notifications/initialized` and requests the SDK refuses before any middleware,
 such as an unknown method. Names are `mcp.<method>`, or `mcp.<method>:<target>`
-where the target is the tool or prompt name, or the resource URI, the client
-sent, bounded to 256 UTF-16 units. Attributes are `agentrail.mcp.layer`
+where the target is the tool or prompt name, or the resource URI without its
+userinfo, query or fragment, the client sent, bounded to 256 UTF-16 units. Attributes are `agentrail.mcp.layer`
 `transport`, `agentrail.mcp.method` (left off when it does not match the
 collector's pattern), client name and version (the message's `_meta`
 clientInfo, else what initialize declared), the protocol version the message
