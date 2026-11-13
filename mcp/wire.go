@@ -104,6 +104,7 @@ type tracker struct {
 	mu      sync.Mutex
 	meta    mcpspan.Meta
 	pending map[string]*call
+	closed  bool // set by close; no call is kept pending after it
 }
 
 func newTracker(client *agentrail.Client, meta mcpspan.Meta) *tracker {
@@ -173,9 +174,18 @@ func (t *tracker) receive(ctx context.Context, msg jsonrpc.Message, keys ...any)
 		span.End(mcpspan.Outcome{Meta: t.sessionMeta(meta)})
 		return nil
 	}
+	// Registered before it is pending, so whoever takes it from pending (an
+	// answer, which with a repeated id can be the earlier call's) unregisters it.
+	register(c)
+	t.mu.Lock()
+	if t.closed { // read while its connection closed: no answer will come
+		t.mu.Unlock()
+		unregister(c)
+		span.End(mcpspan.Outcome{Meta: t.sessionMeta(meta)})
+		return nil
+	}
 	// A repeated id replaces a call still pending, which can then never be
 	// matched to its answer: end it as refused so nothing stays registered.
-	t.mu.Lock()
 	replaced := t.pending[idKey(req.ID)]
 	t.pending[idKey(req.ID)] = c
 	t.mu.Unlock()
@@ -183,7 +193,6 @@ func (t *tracker) receive(ctx context.Context, msg jsonrpc.Message, keys ...any)
 		unregister(replaced)
 		replaced.span.End(mcpspan.Outcome{Meta: t.sessionMeta(replaced.meta), Rejected: true})
 	}
-	register(c)
 	return c
 }
 
@@ -250,6 +259,14 @@ func (t *tracker) respond(msg jsonrpc.Message) {
 		}
 	}
 	c.span.End(o)
+}
+
+// close ends every pending call and keeps none received afterwards.
+func (t *tracker) close() {
+	t.mu.Lock()
+	t.closed = true
+	t.mu.Unlock()
+	t.abandon(false)
 }
 
 // abandon ends calls that will get no response here: those given, or every

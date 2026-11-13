@@ -79,6 +79,6 @@ func (c *connection) Write(ctx context.Context, msg jsonrpc.Message) error {
 
 func (c *connection) Close() error {
 	err := c.Connection.Close()
-	c.tracker.abandon(false)
+	c.tracker.close()
 	return err
 }
