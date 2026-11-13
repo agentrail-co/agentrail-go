@@ -174,6 +174,13 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), activeKey{}, new(postMarker))
 	var mu sync.Mutex // the SDK may write from its session goroutine
 	status := 0
+	// Deferred so a panicking handler leaves nothing registered.
+	defer func() {
+		mu.Lock()
+		rejected := status >= 400
+		mu.Unlock()
+		t.abandon(rejected)
+	}()
 	var body bytes.Buffer
 	sse := &sseParser{onEvent: func(_ string, data []byte) {
 		for _, m := range decode(data) {
@@ -233,7 +240,6 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 			h.remember(issued, t.snapshot())
 		}
 	}
-	t.abandon(status >= 400)
 }
 
 // ssePost records a legacy SSE message; its answer arrives on the stream.
@@ -246,6 +252,12 @@ func (h *httpCapture) ssePost(w http.ResponseWriter, r *http.Request, t *tracker
 	}
 	var mu sync.Mutex
 	status := 0
+	finished := false
+	defer func() {
+		if !finished { // the handler panicked
+			t.abandon(false, added...)
+		}
+	}()
 	h.next.ServeHTTP(capture(w, func(code int) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -255,6 +267,7 @@ func (h *httpCapture) ssePost(w http.ResponseWriter, r *http.Request, t *tracker
 	}, func([]byte) {}), r)
 	mu.Lock()
 	defer mu.Unlock()
+	finished = true
 	if status >= 400 {
 		t.abandon(true, added...)
 	}

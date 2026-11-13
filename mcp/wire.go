@@ -173,9 +173,16 @@ func (t *tracker) receive(ctx context.Context, msg jsonrpc.Message, keys ...any)
 		span.End(mcpspan.Outcome{Meta: t.sessionMeta(meta)})
 		return nil
 	}
+	// A repeated id replaces a call still pending, which can then never be
+	// matched to its answer: end it as refused so nothing stays registered.
 	t.mu.Lock()
+	replaced := t.pending[idKey(req.ID)]
 	t.pending[idKey(req.ID)] = c
 	t.mu.Unlock()
+	if replaced != nil {
+		unregister(replaced)
+		replaced.span.End(mcpspan.Outcome{Meta: t.sessionMeta(replaced.meta), Rejected: true})
+	}
 	register(c)
 	return c
 }

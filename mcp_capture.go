@@ -127,6 +127,9 @@ func (c *Client) mcpTransport(ctx context.Context, call mcpspan.Call) mcpspan.Sp
 	if span == nil {
 		return noMCPSpan{}
 	}
+	if !c.options.MCP.CapturePayloads {
+		call.Params = nil // only payloads read them; a pending call need not hold them
+	}
 	return &transportSpan{client: c, ctx: ctx, span: span, mark: m, call: call}
 }
 func (t *transportSpan) Graft(ctx context.Context) context.Context {
