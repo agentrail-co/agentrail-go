@@ -24,7 +24,9 @@ const (
 	SurfaceBrowser  Surface = "browser"
 )
 
-type MCPContext struct{ Method, Client, ClientVersion, Protocol string }
+// MCPContext describes an MCP call. Name is the tool, resource or prompt's
+// registered name, never a value from its arguments.
+type MCPContext struct{ Method, Client, ClientVersion, Protocol, Name string }
 type MilestoneContext struct {
 	Surface Surface
 	Kind    string

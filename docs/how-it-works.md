@@ -162,7 +162,12 @@ Import `github.com/agentrail-co/agentrail-go/mcp` and wrap public registration
 callbacks with `Tool`, `ToolHandler`, `Resource`, or `Prompt`. See
 [the MCP example](examples/mcp/main.go). Pass stable registration names, never
 caller-supplied resource URIs. The original typed output, result, error and panic
-are preserved. Tool `IsError` results mark failure without replacing the result.
+are preserved. Tool `IsError` results mark failure without replacing the result,
+with `error.type` `tool_error`; a handler's error keeps its own type. Each span
+also carries the OpenTelemetry MCP names `mcp.method.name`, and
+`gen_ai.tool.name` for a tool or `gen_ai.prompt.name` for a prompt, set to the
+registered name. A resource gets no name attribute, since the convention names
+it only by its URI.
 
 Tests exercise official SDK 1.8.0 modern 2026-07-28 and legacy 2025-11-25 protocols
 on memory/Streamable HTTP, and legacy 2024-11-05 SSE. Modern HTTP requires the
