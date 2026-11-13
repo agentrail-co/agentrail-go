@@ -180,7 +180,8 @@ else what initialize declared), the keyed hash of a `Mcp-Session-Id` the server
 issued on an initialize answer (the same HMAC as principal IDs; never an ID only
 a request carried, so absent for stdio, in-memory, SSE and stateless sessions), the encoded size in bytes of the request and of
 its response (as `jsonrpc.EncodeMessage` writes them; no response size for a
-notification), `agentrail.mcp.jsonrpc.error_code` for a JSON-RPC error and
+notification), `agentrail.mcp.jsonrpc.error_code` for a JSON-RPC error (omitted when the code
+is outside 32 bits, which the collector refuses) and
 `agentrail.mcp.result.is_error` for a failed tool result. Both set status ERROR,
 with `error.type` `McpJsonRpcError` or `McpOperationError`. A request the HTTP
 layer refuses with status 400 or more and no JSON-RPC answer (a plain-text 4xx

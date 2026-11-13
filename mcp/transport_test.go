@@ -428,6 +428,39 @@ func TestRefusedRequestKeepsJSONRPCErrorCode(t *testing.T) {
 	})
 }
 
+// This fails if a JSON-RPC error code outside 32 bits is sent, which makes
+// the collector refuse the whole export, or if the span stops being an error.
+func TestOutOfRangeErrorCodeIsOmitted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, receiver := newCapture(t)
+	server := sdk.NewServer(&sdk.Implementation{Name: "synthetic-server", Version: "1.0"}, nil)
+	for name, code := range map[string]int64{"wide": 2147483648, "lowest": -2147483648} {
+		server.AddTool(&sdk.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return nil, &jsonrpc.Error{Code: code, Message: "synthetic"}
+		})
+	}
+	client := sdk.NewClient(&sdk.Implementation{Name: "synthetic-caller", Version: "2.3"}, nil)
+	session, err := client.Connect(ctx, serve(t, ctx, c, server, "memory"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	for _, name := range []string{"wide", "lowest"} {
+		if _, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: map[string]any{}}); err == nil {
+			t.Fatalf("%s: error swallowed", name)
+		}
+	}
+	got := spans(t, c, receiver)
+	wide := named1(t, got, "mcp.tools/call:wide")
+	if has(wide, key(t, "errorCode")) || wide.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || attr(wide, "error.type") != "McpJsonRpcError" {
+		t.Fatalf("out-of-range code: %v", wide)
+	}
+	if code, ok := intValue(named1(t, got, "mcp.tools/call:lowest"), key(t, "errorCode")); !ok || code != -2147483648 {
+		t.Fatalf("in-range code lost: %d, %v", code, ok)
+	}
+}
+
 // rawPost sends one JSON-RPC message to a Streamable HTTP endpoint and
 // returns the status and the session ID the answer issued.
 func rawPost(t *testing.T, ctx context.Context, endpoint, session, protocol string, id int, method string, params any) (int, string) {

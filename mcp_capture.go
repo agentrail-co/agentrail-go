@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"regexp"
 	"sync"
@@ -150,7 +151,11 @@ func (t *transportSpan) end(o mcpspan.Outcome) {
 		attrs = append(attrs, attribute.Int("agentrail.mcp.response.bytes", o.ResponseBytes))
 		if o.ErrorCode != nil {
 			failed = true
-			attrs = append(attrs, attribute.Int64("agentrail.mcp.jsonrpc.error_code", *o.ErrorCode), attribute.String("error.type", "McpJsonRpcError"))
+			attrs = append(attrs, attribute.String("error.type", "McpJsonRpcError"))
+			// The collector stores the code as int4 and refuses an export with one outside it.
+			if *o.ErrorCode >= math.MinInt32 && *o.ErrorCode <= math.MaxInt32 {
+				attrs = append(attrs, attribute.Int64("agentrail.mcp.jsonrpc.error_code", *o.ErrorCode))
+			}
 		} else if o.IsError {
 			failed = true
 			attrs = append(attrs, attribute.Bool("agentrail.mcp.result.is_error", true), attribute.String("error.type", "McpOperationError"))

@@ -4,9 +4,9 @@
 `apps/api/sdk-contract.json` as generated on branch `feat/mcp-analytics` over
 revision `23eaa10c2e85a5b86648468bc5e28e304394c19e`, before that change was
 committed (adds MCP transport and handler spans, `otlp.mcpAttributes`,
-`otlp.mcpSpans`, payload capture and `otlp.limits.mcpPayloadBytes` /
+`otlp.mcpSpans` (a 32-bit `jsonrpc.error_code`), payload capture and `otlp.limits.mcpPayloadBytes` /
 `exportBatchBytes`; SHA-256
-`3bd2c8048b01bafbc1d08dc41a49646b481c71f8bacbaad3a866c070d323f4ef`). Replace
+`b0466ae7915307279d0c8655a2c6931c1320fecadae169d2135a4655d763038e`). Replace
 this with the merged Argus revision once it lands.
 
 Do not edit it in this repository. Update the receiver contract in Argus, copy
