@@ -118,7 +118,7 @@ func (p *spanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 		// Past the budget the span is kept and only its payload is dropped.
 		c.payloadBytes.Add(-int64(span.payload))
 		span = span.withoutPayload()
-		c.report(context.Background(), "payload_budget_exceeded", "traces", 1)
+		c.report(context.Background(), "payload_budget", "traces", 1)
 	}
 	if !c.spans.Add(span) {
 		c.payloadBytes.Add(-int64(span.payload))

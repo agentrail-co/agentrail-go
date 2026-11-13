@@ -195,7 +195,7 @@ func (c *Client) mcpPayload(ctx context.Context, p MCPPayload, responded bool) (
 	}
 	for _, text := range [][]byte{p.Request, p.Response} {
 		if len(text) > 0 && (!utf8.Valid(text) || !json.Valid(text)) {
-			c.report(ctx, "payload_invalid", "traces", 1)
+			c.report(ctx, "payload_redact_failed", "traces", 1)
 			return nil, 0
 		}
 	}
@@ -252,6 +252,10 @@ func (c *Client) mcpHandler(ctx context.Context, parent mcpspan.Span, active boo
 		m.add(0, mcpMethodAttr(method)...)
 	} else {
 		d.MCP = &MCPContext{Method: method, Client: meta.Client, ClientVersion: meta.ClientVersion, Protocol: meta.Protocol}
+		// As the step, the handler span carries the session its transport span would.
+		if meta.SessionID != "" {
+			m.add(0, attribute.String("agentrail.mcp.session.id_hash", handoff.Hash(c.options.HashKey, meta.SessionID)))
+		}
 	}
 	if parent != nil {
 		ctx = parent.Graft(ctx)

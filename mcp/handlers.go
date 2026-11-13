@@ -27,6 +27,7 @@ type requestMetadata interface {
 	ClientInfo() *sdk.Implementation
 	ProtocolVersion() string
 	GetExtra() *sdk.RequestExtra
+	GetSession() sdk.Session
 }
 
 // observe runs a registered callback in its handler span. target is the
@@ -37,6 +38,10 @@ func observe(ctx context.Context, client *agentrail.Client, req requestMetadata,
 	meta := mcpspan.Meta{Protocol: req.ProtocolVersion()}
 	if c := req.ClientInfo(); c != nil {
 		meta.Client, meta.ClientVersion = c.Name, c.Version
+	}
+	// A request built outside a session (a direct call in tests) has none.
+	if s, ok := req.GetSession().(*sdk.ServerSession); ok && s != nil {
+		meta.SessionID = s.ID()
 	}
 	return mcpspan.Handler(client, ctx, parent, active, method, spanName(method, label), meta, run)
 }

@@ -85,7 +85,7 @@ func TestPayloadBudgetDropsPayloadsNotSpans(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if strings.Join(codes, ",") != "payload_budget_exceeded" {
+	if strings.Join(codes, ",") != "payload_budget" {
 		t.Fatalf("diagnostics %v", codes)
 	}
 	carried := map[string]bool{}

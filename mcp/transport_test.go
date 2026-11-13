@@ -423,7 +423,9 @@ func TestRefusedRequestKeepsJSONRPCErrorCode(t *testing.T) {
 }
 
 // This fails if payloads are sent when the redact hook drops them, if the
-// hook's result is not what is sent, or if a panicking hook breaks the call.
+// hook's result is not what is sent, if a panicking hook breaks the call, or
+// if a hook that panics or returns invalid JSON is not reported as
+// payload_redact_failed.
 func TestPayloadsFollowTheRedactHook(t *testing.T) {
 	for _, mode := range []string{"memory", "http", "sse"} {
 		t.Run(mode, func(t *testing.T) {
@@ -443,13 +445,16 @@ func TestPayloadsFollowTheRedactHook(t *testing.T) {
 						return p, false
 					case "panics":
 						panic("private-redact-panic")
+					case "invalid":
+						p.Response = json.RawMessage(`{"private-invalid"`)
+						return p, true
 					}
 					p.Request = bytes.ReplaceAll(p.Request, []byte("private-argument"), []byte("[redacted]"))
 					return p, true
 				}}
 			})
 			server := sdk.NewServer(&sdk.Implementation{Name: "synthetic-server", Version: "1.0"}, nil)
-			for _, name := range []string{"kept", "dropped", "panics"} {
+			for _, name := range []string{"kept", "dropped", "panics", "invalid"} {
 				sdk.AddTool(server, &sdk.Tool{Name: name}, agentrailmcp.Tool(c, name, func(ctx context.Context, req *sdk.CallToolRequest, in input) (*sdk.CallToolResult, output, error) {
 					return nil, output{Value: "visible-result"}, nil
 				}))
@@ -460,7 +465,7 @@ func TestPayloadsFollowTheRedactHook(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer session.Close()
-			for _, name := range []string{"kept", "dropped", "panics"} {
+			for _, name := range []string{"kept", "dropped", "panics", "invalid"} {
 				if r, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: map[string]any{"secret": "private-argument"}}); err != nil || r.IsError {
 					t.Fatalf("%s changed by capture: %+v, %v", name, r, err)
 				}
@@ -472,7 +477,7 @@ func TestPayloadsFollowTheRedactHook(t *testing.T) {
 			if !json.Valid([]byte(request)) || !strings.Contains(request, `"[redacted]"`) || !strings.Contains(request, `"name":"kept"`) || !strings.Contains(response, "visible-result") {
 				t.Fatalf("payload is not what the hook returned: %q / %q", request, response)
 			}
-			for _, name := range []string{"dropped", "panics"} {
+			for _, name := range []string{"dropped", "panics", "invalid"} {
 				s := named1(t, transports, "mcp.tools/call:"+name)
 				if has(s, key(t, "requestPayload")) || has(s, key(t, "responsePayload")) {
 					t.Fatalf("%s payload sent: %v", name, s)
@@ -488,7 +493,7 @@ func TestPayloadsFollowTheRedactHook(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if strings.Join(codes, ",") != "payload_redact_failed" {
+			if strings.Join(codes, ",") != "payload_redact_failed,payload_redact_failed" {
 				t.Fatalf("diagnostics %v", codes)
 			}
 		})

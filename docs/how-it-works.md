@@ -197,8 +197,9 @@ metadata of the 4,096 most recent stateful sessions.
 `Resource` or `Prompt`. Pass stable registration names, which name the
 callback's span. Inside a transport span the callback's span is its child,
 `agentrail.mcp.layer` `handler`, and no step, so a tool call counts once. With
-no transport wrapper it is the call's step, as before, with `layer` `handler`
-and `agentrail.mcp.method`. The original typed output, result, error and panic
+no transport wrapper it is the call's step, as before, with `layer` `handler`,
+`agentrail.mcp.method` and, when the request's session has an ID, the keyed
+`agentrail.mcp.session.id_hash`. The original typed output, result, error and panic
 are preserved; tool `IsError` results mark failure without replacing the result.
 Client metadata is untrusted descriptive context, never identity.
 
@@ -207,14 +208,15 @@ content is sent. Set `Options.MCP.CapturePayloads` to send each request's params
 as `agentrail.mcp.request.payload` and its result, or JSON-RPC error object, as
 `agentrail.mcp.response.payload`, as JSON text. `Options.MCP.Redact` receives an
 `MCPPayload{Method, Name, Request, Response}` copy and returns what to send, or
-false to send none. A panic or invalid JSON drops that payload and reports
-`payload_redact_failed` or `payload_invalid`; the MCP call is unaffected.
+false to send none. A hook that panics or returns a payload that is not valid
+JSON drops that payload and reports `payload_redact_failed`; the MCP call is
+unaffected.
 Payloads have no length limit of their own and are exempt from the string caps
 elsewhere; only a span whose payloads could not fit one 16 MiB export is cut, as
 valid UTF-8, with `agentrail.mcp.request.truncated` or `.response.truncated`
 set. At most 64 MiB of payload text is held per span queue, the batch in flight
 included; past it a span is sent without its payloads and
-`payload_budget_exceeded` is reported. The collector keeps payloads only for a
+`payload_budget` is reported. The collector keeps payloads only for a
 source whose Admin turned payload capture on.
 
 Tests exercise official SDK 1.8.0 modern 2026-07-28 and legacy 2025-11-25 protocols

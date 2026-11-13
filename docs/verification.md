@@ -99,3 +99,8 @@ error code lost, an unknown-method request never given a transport span, a
 handler span counted as a second step, an attribute the contract does not name,
 the stateful Streamable HTTP session hash dropped, the payload budget not
 enforced or never released, and span batches closed by record count alone.
+Parity pass with the Node and Python SDKs: loss codes are `payload_budget` and
+`payload_redact_failed` (invalid JSON from the hook included), and a handler
+span that is its own step carries the session hash. Mutations caught: the old
+budget code, a separate code for invalid JSON, a response size on a
+notification, and a standalone handler span without its session hash.
