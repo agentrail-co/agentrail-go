@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentrail-co/agentrail-go/internal/handoff"
+	"github.com/agentrail-co/agentrail-go/internal/mcpspan"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -28,6 +29,8 @@ type sanitizedSpan struct {
 	kind       trace.SpanKind
 	start, end time.Time
 	status     sdktrace.Status
+	// size estimates the encoded span; payload is its MCP payload text length.
+	size, payload int
 }
 
 func (s sanitizedSpan) Name() string                     { return s.name }
@@ -116,7 +119,9 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 			attrs = append(attrs, attribute.String("url.full", u))
 		}
 	}
-	entry := m.mark != nil || s.SpanKind() == trace.SpanKindServer || s.SpanKind() == trace.SpanKindConsumer
+	// A handler span inside its transport span is no step and adds no identity.
+	step := m.mark != nil && (m.mark.mcp == nil || m.mark.mcp.step)
+	entry := step || s.SpanKind() == trace.SpanKindServer || s.SpanKind() == trace.SpanKindConsumer
 	if entry {
 		identity := m.state.principal()
 		if m.mark != nil && m.mark.identity != nil {
@@ -134,14 +139,16 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 	} else if v := original["http.method"]; v.Type() == attribute.STRING {
 		name = "HTTP " + v.AsString()
 	}
+	payload := 0
 	if m.mark != nil {
 		d := m.mark.details
 		name = m.mark.name
-		attrs = append(attrs, attribute.Bool("agentrail.step", true), attribute.String("agentrail.step.surface", string(d.Surface)), attribute.String("agentrail.step.kind", d.Kind))
-		attrs = append(attrs, m.mark.performance...)
+		if step {
+			attrs = append(attrs, attribute.Bool("agentrail.step", true), attribute.String("agentrail.step.surface", string(d.Surface)), attribute.String("agentrail.step.kind", d.Kind))
+			attrs = append(attrs, m.mark.performance...)
+		}
 		if d.MCP != nil {
-			// The OpenTelemetry MCP server span's names. A resource is named only
-			// by its URI there, which can carry what was asked for, so it gets none.
+			// Resources have no standard name attribute: their URI is omitted.
 			toolName, promptName := "", ""
 			switch d.MCP.Method {
 			case "tools/call":
@@ -152,11 +159,20 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 			for _, v := range []struct {
 				k, v string
 				max  int
-			}{{"rpc.method", d.MCP.Method, 4096}, {"mcp.method.name", d.MCP.Method, 128}, {"gen_ai.tool.name", toolName, 256}, {"gen_ai.prompt.name", promptName, 256}, {"agentrail.mcp.client.name", d.MCP.Client, 128}, {"agentrail.mcp.client.version", d.MCP.ClientVersion, 128}, {"agentrail.mcp.protocol.version", d.MCP.Protocol, 64}} {
+			}{{"rpc.method", d.MCP.Method, 4096}, {"mcp.method.name", d.MCP.Method, 128}, {"gen_ai.tool.name", toolName, 256}, {"gen_ai.prompt.name", promptName, 256}} {
 				if v.v != "" {
 					attrs = append(attrs, attribute.String(v.k, bounded(v.v, v.max)))
 				}
 			}
+			if m.mark.mcp == nil {
+				attrs = append(attrs, mcpMethodAttr(d.MCP.Method)...)
+			}
+			attrs = append(attrs, c.mcpMetaAttrs(mcpspan.Meta{Client: d.MCP.Client, ClientVersion: d.MCP.ClientVersion, Protocol: d.MCP.Protocol})...)
+		}
+		if m.mark.mcp != nil {
+			var extra []attribute.KeyValue
+			extra, payload = m.mark.mcp.snapshot()
+			attrs = append(attrs, extra...)
 		}
 	}
 	links := []sdktrace.Link{}
@@ -168,7 +184,22 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 			links = append(links, sdktrace.Link{SpanContext: cleanSC(l.SpanContext)})
 		}
 	}
-	return sanitizedSpan{sc: cleanSC(s.SpanContext()), parent: cleanSC(s.Parent()), kind: s.SpanKind(), start: s.StartTime(), end: s.EndTime(), status: sdktrace.Status{Code: s.Status().Code}, name: bounded(name, 4096), attrs: attrs, links: links, res: c.resource}
+	name = bounded(name, 4096)
+	return sanitizedSpan{sc: cleanSC(s.SpanContext()), parent: cleanSC(s.Parent()), kind: s.SpanKind(), start: s.StartTime(), end: s.EndTime(), status: sdktrace.Status{Code: s.Status().Code}, name: name, attrs: attrs, links: links, res: c.resource, size: encodedSize(name, attrs, links), payload: payload}
+}
+
+// encodedSize overestimates a span's OTLP protobuf size, for byte-sized batches.
+func encodedSize(name string, attrs []attribute.KeyValue, links []sdktrace.Link) int {
+	n := 128 + len(name) + 48*len(links)
+	for _, a := range attrs {
+		n += 16 + len(a.Key)
+		if a.Value.Type() == attribute.STRING {
+			n += len(a.Value.AsString())
+		} else {
+			n += 10
+		}
+	}
+	return n
 }
 func marshal(v any) []byte {
 	var b bytes.Buffer

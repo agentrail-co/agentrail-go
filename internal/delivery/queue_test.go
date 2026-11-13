@@ -329,3 +329,42 @@ func TestCancelledInflightRetainsCapacity(t *testing.T) {
 		t.Fatal("accepted beyond retained in-flight capacity")
 	}
 }
+
+// Fails if a batch is closed by record count alone, so records that together
+// exceed the byte limit share one export, or if a record over the limit is
+// never sent, or if a record leaves the queue without its Done callback.
+func TestBatchesCloseBeforeTheirByteLimit(t *testing.T) {
+	cfg := Config{MaxRecords: 10, BatchSize: 10, MaxBatchBytes: 100, ScheduledDelay: time.Hour, ExportTimeout: time.Second, FlushTimeout: time.Second, ShutdownTimeout: time.Second}
+	var mu sync.Mutex
+	batches := [][]int{}
+	done := 0
+	q := NewWithHooks(cfg, func(_ context.Context, b []int) error {
+		mu.Lock()
+		defer mu.Unlock()
+		batches = append(batches, append([]int(nil), b...))
+		return nil
+	}, nil, Hooks[int]{Size: func(n int) int { return n }, Done: func(int) { mu.Lock(); done++; mu.Unlock() }})
+	for _, size := range []int{40, 40, 40, 150, 10} {
+		if !q.Add(size) {
+			t.Fatal("record rejected")
+		}
+	}
+	if err := q.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stop(t, q)
+	mu.Lock()
+	defer mu.Unlock()
+	want := [][]int{{40, 40}, {40}, {150}, {10}}
+	if len(batches) != len(want) {
+		t.Fatalf("batches %v", batches)
+	}
+	for i := range want {
+		if len(batches[i]) != len(want[i]) || batches[i][0] != want[i][0] {
+			t.Fatalf("batches %v, want %v", batches, want)
+		}
+	}
+	if done != 5 {
+		t.Fatalf("done called %d times", done)
+	}
+}

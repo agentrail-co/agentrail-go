@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agentrail "github.com/agentrail-co/agentrail-go"
+	"github.com/agentrail-co/agentrail-go/internal/handoff"
 	agentrailmcp "github.com/agentrail-co/agentrail-go/mcp"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -25,6 +26,12 @@ type capture struct {
 }
 
 func newCapture(t *testing.T) (*agentrail.Client, *capture) {
+	t.Helper()
+	return newCaptureWith(t, nil)
+}
+
+// newCaptureWith lets a test change the options before the client is made.
+func newCaptureWith(t *testing.T, configure func(*agentrail.Options)) (*agentrail.Client, *capture) {
 	t.Helper()
 	r := new(capture)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -50,7 +57,11 @@ func newCapture(t *testing.T) (*agentrail.Client, *capture) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	c, err := agentrail.New(context.Background(), agentrail.Options{Collector: agentrail.CollectorOptions{Endpoint: server.URL, Secret: "synthetic-source"}, HashKey: "synthetic-key", ServiceName: "mcp-test"})
+	options := agentrail.Options{Collector: agentrail.CollectorOptions{Endpoint: server.URL, Secret: "synthetic-source"}, HashKey: "synthetic-key", ServiceName: "mcp-test"}
+	if configure != nil {
+		configure(&options)
+	}
+	c, err := agentrail.New(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +98,8 @@ type output struct {
 }
 
 // This fails if an adapter ignores the registered name, uses raw resource URIs,
-// loses metadata from either protocol generation, or fails to record IsError.
+// loses metadata from either protocol generation, fails to record IsError, or
+// drops the session hash a standalone handler span knows from its request.
 func TestOfficialServerOperationsOverTransports(t *testing.T) {
 	for _, tc := range []struct{ transport, version string }{{"memory", "2026-07-28"}, {"memory", "2025-11-25"}, {"http", "2026-07-28"}, {"http", "2025-11-25"}, {"sse", "2024-11-05"}} {
 		t.Run(tc.transport+"/"+tc.version, func(t *testing.T) {
@@ -95,7 +107,9 @@ func TestOfficialServerOperationsOverTransports(t *testing.T) {
 			defer cancel()
 			c, receiver := newCapture(t)
 			server := sdk.NewServer(&sdk.Implementation{Name: "synthetic-server", Version: "1.0"}, nil)
+			sessionID := ""
 			sdk.AddTool(server, &sdk.Tool{Name: "lookup"}, agentrailmcp.Tool(c, "registered.lookup", func(ctx context.Context, req *sdk.CallToolRequest, in input) (*sdk.CallToolResult, output, error) {
+				sessionID = req.Session.ID()
 				if in.Secret != "private-argument" {
 					t.Errorf("argument changed: %q", in.Secret)
 				}
@@ -169,6 +183,12 @@ func TestOfficialServerOperationsOverTransports(t *testing.T) {
 			if len(got) != 5 {
 				t.Fatalf("got %d operation spans", len(got))
 			}
+			sessionHash := ""
+			if sessionID != "" {
+				sessionHash = handoff.Hash("synthetic-key", sessionID)
+			} else if tc.transport == "http" && tc.version < "2026-07-28" {
+				t.Fatal("stateful session has no ID")
+			}
 			expected := map[string]struct{ method, kind string }{
 				"mcp.tools/call:registered.lookup":       {"tools/call", "tool.call"},
 				"mcp.tools/call:registered.failure":      {"tools/call", "tool.call"},
@@ -182,8 +202,11 @@ func TestOfficialServerOperationsOverTransports(t *testing.T) {
 					t.Fatalf("unregistered span name %q", span.Name)
 				}
 				delete(expected, span.Name)
-				if attr(span, "rpc.method") != operation.method || attr(span, "agentrail.step.kind") != operation.kind || attr(span, "agentrail.step.surface") != "mcp" || attr(span, "agentrail.mcp.client.name") != "synthetic-caller" || attr(span, "agentrail.mcp.client.version") != "2.3" || attr(span, "agentrail.mcp.protocol.version") != tc.version {
+				if attr(span, "agentrail.mcp.method") != operation.method || attr(span, "agentrail.mcp.layer") != "handler" || attr(span, "agentrail.step.kind") != operation.kind || attr(span, "agentrail.step.surface") != "mcp" || attr(span, "agentrail.mcp.client.name") != "synthetic-caller" || attr(span, "agentrail.mcp.client.version") != "2.3" || attr(span, "agentrail.mcp.protocol.version") != tc.version {
 					t.Fatalf("missing MCP metadata: %v", span)
+				}
+				if attr(span, "agentrail.mcp.session.id_hash") != sessionHash {
+					t.Fatalf("session hash %q, want %q: %v", attr(span, "agentrail.mcp.session.id_hash"), sessionHash, span)
 				}
 				failed := span.Name == "mcp.tools/call:registered.failure" || span.Name == "mcp.tools/call:registered.lowlevel"
 				if (span.Status.GetCode() == tracepb.Status_STATUS_CODE_ERROR) != failed {

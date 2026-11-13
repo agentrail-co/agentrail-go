@@ -12,6 +12,18 @@ import (
 type Config struct {
 	MaxRecords, BatchSize                                        int
 	ScheduledDelay, ExportTimeout, FlushTimeout, ShutdownTimeout time.Duration
+	// MaxBatchBytes closes a batch before the estimated size of its records
+	// would pass it; a record larger than it travels alone. Zero is no limit.
+	MaxBatchBytes int
+}
+
+// Hooks are optional per-record callbacks.
+type Hooks[T any] struct {
+	// Size estimates a record's encoded size for MaxBatchBytes.
+	Size func(T) int
+	// Done is called once for each accepted record when the queue lets it go:
+	// exported, failed or dropped. It runs outside the queue lock.
+	Done func(T)
 }
 
 type Stats struct{ Accepted, Exported, Dropped, Pending uint64 }
@@ -22,6 +34,7 @@ type Issue struct {
 }
 type record[T any] struct {
 	sequence uint64
+	size     int
 	value    T
 }
 type batch[T any] struct {
@@ -37,8 +50,10 @@ type Queue[T any] struct {
 	cfg          Config
 	export       func(context.Context, []T) error
 	report       func(Issue)
+	hooks        Hooks[T]
 	mu           sync.Mutex
 	records      []record[T]
+	bytes        int
 	active       *batch[T]
 	stats        Stats
 	force        uint64
@@ -52,7 +67,11 @@ type Queue[T any] struct {
 }
 
 func New[T any](cfg Config, export func(context.Context, []T) error, report func(Issue)) *Queue[T] {
-	q := &Queue[T]{cfg: cfg, export: export, report: report, changed: make(chan struct{}), wake: make(chan struct{}, 1), done: make(chan struct{}), shutdownDone: make(chan struct{})}
+	return NewWithHooks(cfg, export, report, Hooks[T]{})
+}
+
+func NewWithHooks[T any](cfg Config, export func(context.Context, []T) error, report func(Issue), hooks Hooks[T]) *Queue[T] {
+	q := &Queue[T]{cfg: cfg, export: export, report: report, hooks: hooks, changed: make(chan struct{}), wake: make(chan struct{}, 1), done: make(chan struct{}), shutdownDone: make(chan struct{})}
 	go q.run()
 	return q
 }
@@ -76,15 +95,25 @@ func (q *Queue[T]) Add(value T) bool {
 		q.issue(Issue{Code: code, Count: 1})
 		return false
 	}
+	size := 0
+	if q.hooks.Size != nil {
+		size = q.hooks.Size(value)
+	}
 	q.stats.Accepted++
 	q.stats.Pending++
-	q.records = append(q.records, record[T]{sequence: q.stats.Accepted, value: value})
-	ready := len(q.records) >= q.cfg.BatchSize
+	q.records = append(q.records, record[T]{sequence: q.stats.Accepted, size: size, value: value})
+	q.bytes += size
+	ready := q.full()
 	q.mu.Unlock()
 	if ready {
 		q.signal()
 	}
 	return true
+}
+
+// full reports whether the waiting records make a whole batch. Holds q.mu.
+func (q *Queue[T]) full() bool {
+	return len(q.records) >= q.cfg.BatchSize || (q.cfg.MaxBatchBytes > 0 && q.bytes >= q.cfg.MaxBatchBytes)
 }
 
 func (q *Queue[T]) Diagnostics() Stats { q.mu.Lock(); defer q.mu.Unlock(); return q.stats }
@@ -182,9 +211,11 @@ func (q *Queue[T]) abort(target uint64, err error) {
 		n++
 	}
 	count += n
+	released := append([]record[T](nil), q.records[:n]...)
 	// Clear references so a drained queue does not retain captured records.
 	var zero record[T]
 	for i := 0; i < n; i++ {
+		q.bytes -= q.records[i].size
 		q.records[i] = zero
 	}
 	q.records = q.records[n:]
@@ -192,10 +223,21 @@ func (q *Queue[T]) abort(target uint64, err error) {
 	q.stats.Pending -= uint64(count)
 	q.notify()
 	q.mu.Unlock()
+	// The aborted active batch is released when its export returns.
+	q.release(released)
 	if count > 0 {
 		q.issue(Issue{Code: "deadline", Count: count, Err: err})
 	}
 	q.signal()
+}
+
+func (q *Queue[T]) release(records []record[T]) {
+	if q.hooks.Done == nil {
+		return
+	}
+	for _, r := range records {
+		q.hooks.Done(r.value)
+	}
 }
 
 func (q *Queue[T]) run() {
@@ -220,11 +262,21 @@ func (q *Queue[T]) run() {
 				}
 				break
 			}
-			if !q.closed && len(q.records) < q.cfg.BatchSize && q.records[0].sequence > q.force {
+			if !q.closed && !q.full() && q.records[0].sequence > q.force {
 				q.mu.Unlock()
 				break
 			}
 			n := min(len(q.records), q.cfg.BatchSize)
+			if q.cfg.MaxBatchBytes > 0 {
+				total := 0
+				for i := 0; i < n; i++ {
+					if i > 0 && total+q.records[i].size > q.cfg.MaxBatchBytes {
+						n = i
+						break
+					}
+					total += q.records[i].size
+				}
+			}
 			// Do not sweep records accepted after a forced-drain snapshot into a
 			// partial batch solely because that earlier snapshot requested a flush.
 			if !q.closed && q.records[0].sequence <= q.force {
@@ -235,6 +287,7 @@ func (q *Queue[T]) run() {
 			records := append([]record[T](nil), q.records[:n]...)
 			var zero record[T]
 			for i := 0; i < n; i++ {
+				q.bytes -= q.records[i].size
 				q.records[i] = zero
 			}
 			q.records = q.records[n:]
@@ -265,6 +318,7 @@ func (q *Queue[T]) run() {
 			q.active = nil
 			q.notify()
 			q.mu.Unlock()
+			q.release(records)
 			if !alreadyDropped && err != nil {
 				code := "export_failed"
 				if ctxErr != nil {

@@ -83,3 +83,41 @@ reference exported, the namespace left out of the hash, evidence copied to
 children through request state, a plugin-only call given a workflow role, the
 namespace UUID unchecked, the event-name length unchecked, invalid evidence
 dropping the milestone, and invalid evidence not reported.
+
+## 0.3.0 checks (MCP transport capture and payloads, toolchain go1.26.11)
+
+Run on macOS arm64 with go1.26.11: `gofmt`, `go mod tidy -diff`, `go build`,
+`go vet`, `go test -race -count=1 ./...` (MCP tests also 10 times under race),
+the handoff fuzz target for 10 seconds, `GOTOOLCHAIN=go1.26.0 go test ./...`,
+`scripts/check-consumer.sh` (now compiles `mcp.Handler`, `mcp.Transport` and
+`MCPOptions` from another module) and `govulncheck` v1.9.0: no vulnerabilities
+found. Tests read attribute names and limits from `testdata/sdk-contract.json`.
+The real receiver gate was not run: the Argus contract was uncommitted.
+Mutations caught: payloads exported with capture off, a redact hook's drop
+ignored, an oversized result sent whole instead of truncated, the JSON-RPC
+error code lost, an unknown-method request never given a transport span, a
+handler span counted as a second step, an attribute the contract does not name,
+the stateful Streamable HTTP session hash dropped, the payload budget not
+enforced or never released, and span batches closed by record count alone.
+Parity pass with the Node and Python SDKs: loss codes are `payload_budget` and
+`payload_redact_failed` (invalid JSON from the hook included), and a handler
+span that is its own step carries the session hash. Mutations caught: the old
+budget code, a separate code for invalid JSON, a response size on a
+notification, and a standalone handler span without its session hash.
+Second parity pass (contract SHA-256 `3bd2c804…`): payload capture without a
+redact hook is refused, `Handler` hashes only a session ID the server issued,
+a message's own protocol version wins over initialize's, a request refused
+without a JSON-RPC answer is `McpTransportRejected`, and payload and batch
+limits are the contract's `mcpPayloadBytes` and `exportBatchBytes`. Mutations
+caught: each of those reverted, a limit drifting from the contract, and a
+transport span named with a trailing colon.
+
+Review fixes (contract SHA-256 `9aa9d124…`): a repeated JSON-RPC id ends the
+pending call it replaces, and `Handler` cleans up in a defer, so nothing stays
+registered (tests count the registry after 20 duplicate-id batches, a
+long-lived connection and a panicking handler); `Handler` reads a POST body
+only as the SDK does (a 40 MiB POST and a cross-site POST read no more than
+the bare SDK, which read 4,194,305 bytes of the first); pending calls keep params only with
+payload capture; resource span names drop userinfo, query and fragment. Each
+test failed before its fix. Sizes are still measured by re-encoding, which is
+the contract's definition (the SDK's encoding, without whitespace).

@@ -41,6 +41,7 @@ type mark struct {
 	details     MilestoneContext
 	identity    []attribute.KeyValue
 	performance []attribute.KeyValue
+	mcp         *mcpMark
 }
 type spanMeta struct {
 	state *requestState
@@ -53,6 +54,7 @@ type Client struct {
 	canonicalLogs       *sdklog.LoggerProvider
 	logger              apilog.Logger
 	spans               *delivery.Queue[sdktrace.ReadOnlySpan]
+	payloadBytes        atomic.Int64
 	logs                *delivery.Queue[sdklog.Record]
 	metadata            sync.Map
 	bound               atomic.Bool

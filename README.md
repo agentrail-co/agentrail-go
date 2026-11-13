@@ -7,9 +7,10 @@
 
 `agentrail-go` adds your Go servers to the journeys [Agentrail](https://www.agentrail.co)
 follows: the requests your server answers, the calls it makes, the identity your
-application verified, the milestones you name, your `slog` logs and your MCP tool calls.
-It is built on OpenTelemetry, registers no globals, and never sends bodies,
-arguments, results or raw identities.
+application verified, the milestones you name, your `slog` logs and your MCP traffic.
+It is built on OpenTelemetry, registers no globals, and never sends raw identities,
+or bodies, arguments and results, unless you turn on MCP payload capture
+(`Options.MCP.CapturePayloads`, with a required `Redact` hook).
 
 ## Requirements
 
@@ -57,6 +58,15 @@ err = capture.WithMilestone(r.Context(), "checkout.confirm",
 // On shutdown: stop taking requests first, then send what is queued.
 _ = server.Shutdown(shutdownCtx)
 _ = capture.Shutdown(shutdownCtx)
+```
+
+For an MCP server, wrap its handler (or, for stdio, its transport) and its tools:
+
+```go
+mcpHandler := sdk.NewStreamableHTTPHandler(getServer, nil)
+mux.Handle("/mcp", capturemcp.Handler(capture, mcpHandler))
+// stdio: server.Connect(ctx, capturemcp.Transport(capture, &sdk.StdioTransport{}), nil)
+sdk.AddTool(server, tool, capturemcp.Tool(capture, "confirm_order", confirmOrder))
 ```
 
 `New` never reads environment variables, so check yours are set before calling it.

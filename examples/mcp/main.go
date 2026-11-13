@@ -25,7 +25,15 @@ func main() {
 }
 func run() error {
 	ctx := context.Background()
-	c, err := agentrail.New(ctx, agentrail.Options{Collector: agentrail.CollectorOptions{Endpoint: os.Getenv("AGENTRAIL_ENDPOINT"), Secret: os.Getenv("AGENTRAIL_SOURCE_SECRET")}, HashKey: os.Getenv("AGENTRAIL_HASH_KEY"), ServiceName: "orders-mcp"})
+	c, err := agentrail.New(ctx, agentrail.Options{
+		Collector:   agentrail.CollectorOptions{Endpoint: os.Getenv("AGENTRAIL_ENDPOINT"), Secret: os.Getenv("AGENTRAIL_SOURCE_SECRET")},
+		HashKey:     os.Getenv("AGENTRAIL_HASH_KEY"),
+		ServiceName: "orders-mcp",
+		// Payload capture is off unless set. To send arguments and results, set
+		// CapturePayloads with the required Redact hook, which removes what must
+		// not leave the server:
+		// MCP: agentrail.MCPOptions{CapturePayloads: true, Redact: func(p agentrail.MCPPayload) (agentrail.MCPPayload, bool) { return p, p.Name != "confirm_order" }},
+	})
 	if err != nil {
 		return err
 	}
@@ -34,8 +42,11 @@ func run() error {
 		// Authenticate at the application's HTTP/auth boundary before asserting identity.
 		return nil, output{Accepted: true}, nil
 	}))
-	_ = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true})
-	// Mount behind c.Middleware and the application's auth boundary. Arguments and
-	// returned content are never exported by the adapter.
+	// capturemcp.Handler records every JSON-RPC message the server receives;
+	// the tool's own span becomes its child. For stdio or in-memory servers,
+	// wrap the transport instead: server.Connect(ctx, capturemcp.Transport(c, transport), nil).
+	mcpHandler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true})
+	_ = &http.Server{Addr: ":8080", Handler: c.Middleware(capturemcp.Handler(c, mcpHandler))}
+	// Mount behind the application's auth boundary, then serve.
 	return c.Shutdown(ctx)
 }
