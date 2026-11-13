@@ -148,7 +148,25 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 			attrs = append(attrs, m.mark.performance...)
 		}
 		if d.MCP != nil {
-			attrs = append(attrs, mcpMethodAttr(d.MCP.Method)...)
+			// Resources have no standard name attribute: their URI is omitted.
+			toolName, promptName := "", ""
+			switch d.MCP.Method {
+			case "tools/call":
+				toolName = d.MCP.Name
+			case "prompts/get":
+				promptName = d.MCP.Name
+			}
+			for _, v := range []struct {
+				k, v string
+				max  int
+			}{{"rpc.method", d.MCP.Method, 4096}, {"mcp.method.name", d.MCP.Method, 128}, {"gen_ai.tool.name", toolName, 256}, {"gen_ai.prompt.name", promptName, 256}} {
+				if v.v != "" {
+					attrs = append(attrs, attribute.String(v.k, bounded(v.v, v.max)))
+				}
+			}
+			if m.mark.mcp == nil {
+				attrs = append(attrs, mcpMethodAttr(d.MCP.Method)...)
+			}
 			attrs = append(attrs, c.mcpMetaAttrs(mcpspan.Meta{Client: d.MCP.Client, ClientVersion: d.MCP.ClientVersion, Protocol: d.MCP.Protocol})...)
 		}
 		if m.mark.mcp != nil {

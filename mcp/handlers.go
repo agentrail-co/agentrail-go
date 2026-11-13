@@ -35,7 +35,7 @@ type requestMetadata interface {
 // stable registration name the span is named after.
 func observe(ctx context.Context, client *agentrail.Client, req requestMetadata, method, target, label string, run func(context.Context) error) error {
 	parent, active := lookup(ctx, req.GetExtra(), method, target)
-	meta := mcpspan.Meta{Protocol: req.ProtocolVersion()}
+	meta := mcpspan.Meta{Protocol: req.ProtocolVersion(), RegisteredName: label}
 	if c := req.ClientInfo(); c != nil {
 		meta.Client, meta.ClientVersion = c.Name, c.Version
 	}

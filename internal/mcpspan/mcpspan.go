@@ -25,6 +25,8 @@ type Call struct {
 // Meta is what the client said about itself, and the session it is in.
 type Meta struct {
 	Client, ClientVersion, Protocol, SessionID string
+	// RegisteredName names a handler independently of its bounded span label.
+	RegisteredName string
 }
 
 // Outcome is how the server answered one call.

@@ -183,7 +183,7 @@ its response (as `jsonrpc.EncodeMessage` writes them; no response size for a
 notification), `agentrail.mcp.jsonrpc.error_code` for a JSON-RPC error (omitted when the code
 is outside 32 bits, which the collector refuses) and
 `agentrail.mcp.result.is_error` for a failed tool result. Both set status ERROR,
-with `error.type` `McpJsonRpcError` or `McpOperationError`. A request the HTTP
+with `error.type` `McpJsonRpcError` or `tool_error`. A request the HTTP
 layer refuses with status 400 or more and no JSON-RPC answer after reading it
 (in protocols before 2026-07-28, a plain-text 400 for an unknown method) is
 ERROR with `error.type` `McpTransportRejected` and no code. A request whose
@@ -218,6 +218,11 @@ no transport wrapper it is the call's step, as before, with `layer` `handler`,
 `agentrail.mcp.session.id_hash`. The original typed output, result, error and panic
 are preserved; tool `IsError` results mark failure without replacing the result.
 Client metadata is untrusted descriptive context, never identity.
+
+Transport and handler spans carry `mcp.method.name`, plus `gen_ai.tool.name`
+for a tool or `gen_ai.prompt.name` for a prompt. The transport names the
+requested operation; the handler names the registered callback. Resources
+have no standard name attribute: `mcp.resource.uri` is omitted.
 
 **Payloads, opt-in.** By default no argument, result, prompt text or resource
 content is sent. Set `Options.MCP.CapturePayloads`, which `New` refuses without

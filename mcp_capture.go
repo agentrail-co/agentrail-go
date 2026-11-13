@@ -149,7 +149,7 @@ func (c *Client) mcpTransport(ctx context.Context, call mcpspan.Call) mcpspan.Sp
 	if call.Method == "resources/read" {
 		name = resourceName(name)
 	}
-	ctx, span := c.start(ctx, mcpSpanName(call.Method, name), MilestoneContext{Surface: SurfaceMCP, Kind: mcpKind(call.Method)}, m)
+	ctx, span := c.start(ctx, mcpSpanName(call.Method, name), MilestoneContext{Surface: SurfaceMCP, Kind: mcpKind(call.Method), MCP: &MCPContext{Method: call.Method, Name: name}}, m)
 	if span == nil {
 		return noMCPSpan{}
 	}
@@ -187,7 +187,7 @@ func (t *transportSpan) end(o mcpspan.Outcome) {
 			}
 		} else if o.IsError {
 			failed = true
-			attrs = append(attrs, attribute.Bool("agentrail.mcp.result.is_error", true), attribute.String("error.type", "McpOperationError"))
+			attrs = append(attrs, attribute.Bool("agentrail.mcp.result.is_error", true), attribute.String("error.type", "tool_error"))
 		}
 	}
 	payload := 0
@@ -284,11 +284,10 @@ func cutUTF8(s string, n int) (string, bool) {
 
 func (c *Client) mcpHandler(ctx context.Context, parent mcpspan.Span, active bool, method, name string, meta mcpspan.Meta, run func(context.Context) error) (err error) {
 	m := &mcpMark{layer: "handler", step: !active}
-	d := MilestoneContext{Surface: SurfaceMCP, Kind: mcpKind(method)}
-	if active {
-		m.add(0, mcpMethodAttr(method)...)
-	} else {
-		d.MCP = &MCPContext{Method: method, Client: meta.Client, ClientVersion: meta.ClientVersion, Protocol: meta.Protocol}
+	d := MilestoneContext{Surface: SurfaceMCP, Kind: mcpKind(method), MCP: &MCPContext{Method: method, Name: meta.RegisteredName}}
+	m.add(0, mcpMethodAttr(method)...)
+	if !active {
+		d.MCP.Client, d.MCP.ClientVersion, d.MCP.Protocol = meta.Client, meta.ClientVersion, meta.Protocol
 		// As the step, the handler span carries the session its transport span would.
 		if meta.SessionID != "" {
 			m.add(0, attribute.String("agentrail.mcp.session.id_hash", handoff.Hash(c.options.HashKey, meta.SessionID)))
@@ -311,7 +310,7 @@ func (c *Client) mcpHandler(ctx context.Context, parent mcpspan.Span, active boo
 		if err != nil {
 			span.SetStatus(codes.Error, "")
 			if errors.As(err, &mcpspan.OperationError{}) {
-				m.add(0, attribute.Bool("agentrail.mcp.result.is_error", true), attribute.String("error.type", "McpOperationError"))
+				m.add(0, attribute.Bool("agentrail.mcp.result.is_error", true), attribute.String("error.type", "tool_error"))
 			} else {
 				m.add(0, attribute.String("error.type", bounded(reflect.TypeOf(err).String(), 4096)))
 			}

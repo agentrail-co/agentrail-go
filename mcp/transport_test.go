@@ -313,13 +313,35 @@ func TestTransportSpansOverTransports(t *testing.T) {
 				if attr(parent, key(t, "clientName")) != "synthetic-caller" || attr(parent, key(t, "clientVersion")) != "2.3" || attr(parent, key(t, "protocolVersion")) != tc.version {
 					t.Fatalf("client metadata lost: %v", parent)
 				}
+				// Fails if either layer loses standard MCP names, or a resource URI is exported as one.
+				for _, s := range []*tracepb.Span{parent, child} {
+					method := attr(s, key(t, "method"))
+					if attr(s, key(t, "methodName")) != method {
+						t.Fatalf("standard method lost: %v", s)
+					}
+					_, target, _ := strings.Cut(s.Name, ":")
+					switch method {
+					case "tools/call":
+						if attr(s, key(t, "toolName")) != target {
+							t.Fatalf("standard tool name lost: %v", s)
+						}
+					case "prompts/get":
+						if attr(s, key(t, "promptName")) != target {
+							t.Fatalf("standard prompt name lost: %v", s)
+						}
+					case "resources/read":
+						if has(s, key(t, "toolName")) || has(s, key(t, "promptName")) || has(s, "mcp.resource.uri") {
+							t.Fatalf("resource named by URI: %v", s)
+						}
+					}
+				}
 			}
 			lookup := named1(t, transports, "mcp.tools/call:lookup")
 			if lookup.Status.GetCode() == tracepb.Status_STATUS_CODE_ERROR || has(lookup, key(t, "errorCode")) || has(lookup, key(t, "isError")) {
 				t.Fatalf("successful call failed: %v", lookup)
 			}
 			failure := named1(t, transports, "mcp.tools/call:failure")
-			if failure.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || !boolValue(failure, key(t, "isError")) || attr(failure, "error.type") != "McpOperationError" {
+			if failure.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || !boolValue(failure, key(t, "isError")) || attr(failure, "error.type") != "tool_error" {
 				t.Fatalf("IsError lost: %v", failure)
 			}
 			lowlevel := named1(t, transports, "mcp.tools/call:lowlevel")

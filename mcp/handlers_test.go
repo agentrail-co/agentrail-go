@@ -212,6 +212,23 @@ func TestOfficialServerOperationsOverTransports(t *testing.T) {
 				if (span.Status.GetCode() == tracepb.Status_STATUS_CODE_ERROR) != failed {
 					t.Fatalf("wrong operation status: %v", span)
 				}
+				// This fails if the OpenTelemetry MCP names are dropped, a
+				// resource is named by its URI, or a failed tool result reads
+				// like a handler that returned an error.
+				registered := span.Name[strings.Index(span.Name, ":")+1:]
+				wantTool, wantPrompt := "", ""
+				switch operation.method {
+				case "tools/call":
+					wantTool = registered
+				case "prompts/get":
+					wantPrompt = registered
+				}
+				if attr(span, "mcp.method.name") != operation.method || attr(span, "gen_ai.tool.name") != wantTool || attr(span, "gen_ai.prompt.name") != wantPrompt || attr(span, "mcp.resource.uri") != "" {
+					t.Fatalf("wrong OpenTelemetry MCP names: %v", span)
+				}
+				if (attr(span, "error.type") == "tool_error") != (span.Name == "mcp.tools/call:registered.failure") {
+					t.Fatalf("wrong error type: %v", span)
+				}
 				if len(span.ParentSpanId) != 0 {
 					t.Fatalf("standalone operation unexpectedly parented: %v", span)
 				}
