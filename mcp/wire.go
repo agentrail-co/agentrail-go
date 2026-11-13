@@ -67,7 +67,8 @@ func unregister(c *call) {
 // activeKey marks a context whose session a transport wrapper observes.
 type activeKey struct{}
 
-// lookup finds and claims the transport call a handler serves. active is true
+// lookup finds and claims the transport call a handler serves, only when
+// exactly one pending call under a key could be it. active is true
 // when a transport wrapper observes the request even if no call matched, so
 // the handler never becomes a second step for one call.
 func lookup(ctx context.Context, extra *sdk.RequestExtra, method, target string) (mcpspan.Span, bool) {
@@ -88,11 +89,25 @@ func lookup(ctx context.Context, extra *sdk.RequestExtra, method, target string)
 	for _, k := range keys {
 		list, ok := registry.calls[k]
 		active = active || ok
+		var match *call
+		matches := 0
 		for _, c := range list {
 			if !c.claimed && c.method == method && c.target == target {
-				c.claimed = true
-				return c.span, true
+				match = c
+				matches++
 			}
+		}
+		switch {
+		case matches == 1:
+			match.claimed = true
+			return match.span, true
+		case matches > 1:
+			// Calls under one key (a legacy SSE stream, or one HTTP batch)
+			// that name the same operation are indistinguishable here: the
+			// SDK gives a callback no JSON-RPC id. Their order of arrival is
+			// not their callbacks' order, so the handler span takes no
+			// parent rather than possibly another request's.
+			return nil, true
 		}
 	}
 	return nil, active

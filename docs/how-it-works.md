@@ -208,7 +208,11 @@ metadata of the 4,096 most recent stateful sessions.
 **Handler spans.** Wrap registration callbacks with `Tool`, `ToolHandler`,
 `Resource` or `Prompt`. Pass stable registration names, which name the
 callback's span. Inside a transport span the callback's span is its child,
-`agentrail.mcp.layer` `handler`, and no step, so a tool call counts once. With
+`agentrail.mcp.layer` `handler`, and no step, so a tool call counts once. The
+SDK gives a callback no JSON-RPC id, so when two pending calls on one legacy
+SSE stream (or in one HTTP batch) name the same tool, prompt or resource, the
+callback's span takes no parent rather than risk another request's; it is
+still no step, and each call still counts once through its transport span. With
 no transport wrapper it is the call's step, as before, with `layer` `handler`,
 `agentrail.mcp.method` and, when the request's session has an ID, the keyed
 `agentrail.mcp.session.id_hash`. The original typed output, result, error and panic
