@@ -278,7 +278,8 @@ func cutUTF8(s string, n int) (string, bool) {
 	for n > 0 && !utf8.RuneStart(s[n]) {
 		n--
 	}
-	return s[:n], true
+	// A copy, so a queued span holds only what the payload budget counts.
+	return strings.Clone(s[:n]), true
 }
 
 func (c *Client) mcpHandler(ctx context.Context, parent mcpspan.Span, active bool, method, name string, meta mcpspan.Meta, run func(context.Context) error) (err error) {

@@ -3,7 +3,9 @@ package agentrail
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/agentrail-co/agentrail-go/internal/mcpspan"
 )
@@ -29,5 +31,24 @@ func TestPendingCallsKeepParamsOnlyForCapture(t *testing.T) {
 		}
 		span.End(mcpspan.Outcome{})
 		c.Shutdown(context.Background())
+	}
+}
+
+// This fails if a cut payload shares the original's memory: the budget
+// counts only the cut length, so queued spans would pin whole results.
+func TestCutPayloadsDoNotPinTheirOriginal(t *testing.T) {
+	request, response := `{"a":1}`, strings.Repeat("é", 1<<20)
+	for _, limit := range []int{1 << 20, 1 << 10} {
+		q, _, r, rc := fitPayload(request, response, limit)
+		if !rc || len(q)+len(r) > limit {
+			t.Fatalf("limit %d: not cut", limit)
+		}
+		if unsafe.StringData(r) == unsafe.StringData(response) {
+			t.Fatalf("limit %d: the cut response shares the original's memory", limit)
+		}
+	}
+	long := strings.Repeat("a", 1<<20)
+	if q, qc, r, rc := fitPayload(long, long, 1<<10); !qc || !rc || unsafe.StringData(q) == unsafe.StringData(long) || unsafe.StringData(r) == unsafe.StringData(long) {
+		t.Fatal("a cut payload shares the original's memory")
 	}
 }
