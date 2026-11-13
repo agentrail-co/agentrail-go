@@ -104,3 +104,10 @@ Parity pass with the Node and Python SDKs: loss codes are `payload_budget` and
 span that is its own step carries the session hash. Mutations caught: the old
 budget code, a separate code for invalid JSON, a response size on a
 notification, and a standalone handler span without its session hash.
+Second parity pass (contract SHA-256 `3bd2c804…`): payload capture without a
+redact hook is refused, `Handler` hashes only a session ID the server issued,
+a message's own protocol version wins over initialize's, a request refused
+without a JSON-RPC answer is `McpTransportRejected`, and payload and batch
+limits are the contract's `mcpPayloadBytes` and `exportBatchBytes`. Mutations
+caught: each of those reverted, a limit drifting from the contract, and a
+transport span named with a trailing colon.

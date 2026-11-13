@@ -30,7 +30,8 @@ func run() error {
 		HashKey:     os.Getenv("AGENTRAIL_HASH_KEY"),
 		ServiceName: "orders-mcp",
 		// Payload capture is off unless set. To send arguments and results, set
-		// CapturePayloads and redact what must not leave the server:
+		// CapturePayloads with the required Redact hook, which removes what must
+		// not leave the server:
 		// MCP: agentrail.MCPOptions{CapturePayloads: true, Redact: func(p agentrail.MCPPayload) (agentrail.MCPPayload, bool) { return p, p.Name != "confirm_order" }},
 	})
 	if err != nil {

@@ -10,7 +10,7 @@ follows: the requests your server answers, the calls it makes, the identity your
 application verified, the milestones you name, your `slog` logs and your MCP traffic.
 It is built on OpenTelemetry, registers no globals, and never sends raw identities,
 or bodies, arguments and results, unless you turn on MCP payload capture
-(`Options.MCP.CapturePayloads`).
+(`Options.MCP.CapturePayloads`, with a required `Redact` hook).
 
 ## Requirements
 

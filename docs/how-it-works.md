@@ -173,15 +173,18 @@ such as an unknown method. Names are `mcp.<method>`, or `mcp.<method>:<target>`
 where the target is the tool or prompt name, or the resource URI, the client
 sent, bounded to 256 UTF-16 units. Attributes are `agentrail.mcp.layer`
 `transport`, `agentrail.mcp.method` (left off when it does not match the
-collector's pattern), client name, version and protocol, the keyed hash of the
-`Mcp-Session-Id` (the same HMAC as principal IDs; absent for stdio, in-memory,
-SSE and stateless sessions), the encoded size in bytes of the request and of
+collector's pattern), client name and version (the message's `_meta`
+clientInfo, else what initialize declared), the protocol version the message
+itself carried (`_meta`, the `Mcp-Protocol-Version` header or initialize params,
+else what initialize declared), the keyed hash of a `Mcp-Session-Id` the server
+issued on an initialize answer (the same HMAC as principal IDs; never an ID only
+a request carried, so absent for stdio, in-memory, SSE and stateless sessions), the encoded size in bytes of the request and of
 its response (as `jsonrpc.EncodeMessage` writes them; no response size for a
 notification), `agentrail.mcp.jsonrpc.error_code` for a JSON-RPC error and
 `agentrail.mcp.result.is_error` for a failed tool result. Both set status ERROR,
 with `error.type` `McpJsonRpcError` or `McpOperationError`. A request the HTTP
-layer refuses without a JSON-RPC answer (a plain-text 4xx in older protocols)
-is ERROR with no code. The span ends when the response is written, before the
+layer refuses with status 400 or more and no JSON-RPC answer (a plain-text 4xx
+in older protocols) is ERROR with `error.type` `McpTransportRejected` and no code. The span ends when the response is written, before the
 client can read it.
 
 `Transport` gives each request an empty `*sdk.RequestExtra` when its transport
@@ -204,7 +207,8 @@ are preserved; tool `IsError` results mark failure without replacing the result.
 Client metadata is untrusted descriptive context, never identity.
 
 **Payloads, opt-in.** By default no argument, result, prompt text or resource
-content is sent. Set `Options.MCP.CapturePayloads` to send each request's params
+content is sent. Set `Options.MCP.CapturePayloads`, which `New` refuses without
+`Options.MCP.Redact`, to send each request's params
 as `agentrail.mcp.request.payload` and its result, or JSON-RPC error object, as
 `agentrail.mcp.response.payload`, as JSON text. `Options.MCP.Redact` receives an
 `MCPPayload{Method, Name, Request, Response}` copy and returns what to send, or
@@ -212,9 +216,9 @@ false to send none. A hook that panics or returns a payload that is not valid
 JSON drops that payload and reports `payload_redact_failed`; the MCP call is
 unaffected.
 Payloads have no length limit of their own and are exempt from the string caps
-elsewhere; only a span whose payloads could not fit one 16 MiB export is cut, as
-valid UTF-8, with `agentrail.mcp.request.truncated` or `.response.truncated`
-set. At most 64 MiB of payload text is held per span queue, the batch in flight
+elsewhere, except that a span's two payloads together are cut to the contract's
+`limits.mcpPayloadBytes` (14 MiB), the longer first, as valid UTF-8, with
+`agentrail.mcp.request.truncated` or `.response.truncated` set. At most 64 MiB of payload text is held per span queue, the batch in flight
 included; past it a span is sent without its payloads and
 `payload_budget` is reported. The collector keeps payloads only for a
 source whose Admin turned payload capture on.

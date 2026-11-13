@@ -63,9 +63,10 @@ type MCPPayload struct {
 type MCPOptions struct {
 	// CapturePayloads sends each request's params and its result as JSON text.
 	// Off by default: without it no argument, result or resource content is sent.
+	// It requires Redact.
 	CapturePayloads bool
-	// Redact runs on every payload before it is queued, on the goroutine that
-	// wrote the response. Return the payload to send, which must stay valid JSON,
+	// Redact, required with CapturePayloads, runs on every payload before it
+	// is queued, on the goroutine that wrote the response. Return the payload to send, which must stay valid JSON,
 	// or false to send none. It receives copies it may change. A panic, or JSON
 	// that is not valid, drops the payload and is reported to OnError; the MCP
 	// call is never affected.
@@ -176,6 +177,9 @@ func resolve(o Options) (Options, error) {
 		if e != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || origin(u) != s || u.Path != "" {
 			return bad("outbound origins must be exact canonical HTTP(S) origins")
 		}
+	}
+	if o.MCP.CapturePayloads && o.MCP.Redact == nil {
+		return bad("MCP payload capture needs a Redact hook")
 	}
 	q := &o.Queue
 	if q.MaxRecords == 0 {

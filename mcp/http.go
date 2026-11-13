@@ -148,13 +148,18 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 	// Streamable HTTP: answers come back on this request.
 	requested := r.Header.Get(sessionHeader)
 	h.mu.Lock()
-	meta := h.sessions[requested]
+	meta, issued := h.sessions[requested]
 	h.mu.Unlock()
-	if meta.Protocol == "" {
-		meta.Protocol = r.Header.Get(protocolHeader)
+	// The version this message carried comes before what initialize said.
+	if v := r.Header.Get(protocolHeader); v != "" {
+		meta.Protocol = v
 	}
 	t := newTracker(h.client, meta)
-	t.setSession(requested)
+	// Only an ID the server issued on an initialize answer is a session; a
+	// stateless server issues none, whatever the request carries.
+	if issued {
+		t.setSession(requested)
+	}
 	key := headerKeyOf(r.Header)
 	initialize := false
 	for _, m := range messages {

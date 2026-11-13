@@ -52,7 +52,7 @@ func TestPayloadBudgetDropsPayloadsNotSpans(t *testing.T) {
 	defer server.Close()
 	var codes []string
 	o := options(server.URL)
-	o.MCP.CapturePayloads = true
+	o.MCP = agentrail.MCPOptions{CapturePayloads: true, Redact: func(p agentrail.MCPPayload) (agentrail.MCPPayload, bool) { return p, true }}
 	o.Queue = agentrail.QueueOptions{BatchSize: 1, ScheduledDelay: time.Millisecond, ExportTimeout: 30 * time.Second, FlushTimeout: 30 * time.Second, ShutdownTimeout: 30 * time.Second}
 	o.OnError = func(_ context.Context, e agentrail.CaptureError) {
 		mu.Lock()
@@ -63,8 +63,8 @@ func TestPayloadBudgetDropsPayloadsNotSpans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Five 14 MiB results exceed the 64 MiB budget by one while exports wait.
-	result, err := json.Marshal(map[string]string{"text": strings.Repeat("a", 14<<20)})
+	// Five 13 MiB results exceed the 64 MiB budget by one while exports wait.
+	result, err := json.Marshal(map[string]string{"text": strings.Repeat("a", 13<<20)})
 	if err != nil {
 		t.Fatal(err)
 	}

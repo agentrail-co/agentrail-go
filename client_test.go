@@ -133,7 +133,7 @@ func TestInvalidConfiguration(t *testing.T) {
 	for _, change := range []func(*agentrail.Options){func(o *agentrail.Options) { o.HashKey = "" }, func(o *agentrail.Options) { o.Collector.Endpoint = "https://example.com/?secret=x" }, func(o *agentrail.Options) { o.OutboundOrigins = []string{"https://example.com/path"} }, func(o *agentrail.Options) {
 		o.Queue.ExportTimeout = time.Second
 		o.Queue.FlushTimeout = time.Millisecond
-	}} {
+	}, func(o *agentrail.Options) { o.MCP.CapturePayloads = true }} {
 		o := options("http://localhost")
 		change(&o)
 		if c, err := agentrail.New(context.Background(), o); err == nil {

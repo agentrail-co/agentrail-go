@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,7 +29,9 @@ type sdkContract struct {
 		SpanAttributes map[string]string `json:"spanAttributes"`
 		MCPAttributes  map[string]string `json:"mcpAttributes"`
 		Limits         struct {
-			BodyBytes int `json:"bodyBytes"`
+			BodyBytes        int `json:"bodyBytes"`
+			MCPPayloadBytes  int `json:"mcpPayloadBytes"`
+			ExportBatchBytes int `json:"exportBatchBytes"`
 		} `json:"limits"`
 		Fixtures struct {
 			Accepted []struct {
@@ -261,6 +264,9 @@ func TestTransportSpansOverTransports(t *testing.T) {
 				if !boolValue(s, "agentrail.step") || attr(s, "agentrail.step.surface") != "mcp" || s.Name != "mcp."+method && !strings.HasPrefix(s.Name, "mcp."+method+":") {
 					t.Fatalf("transport span is not its step: %v", s)
 				}
+				if strings.HasSuffix(s.Name, ":") {
+					t.Fatalf("span named with an empty target: %q", s.Name)
+				}
 				kind := "mcp." + method
 				if method == "tools/call" {
 					kind = "tool.call"
@@ -422,6 +428,85 @@ func TestRefusedRequestKeepsJSONRPCErrorCode(t *testing.T) {
 	})
 }
 
+// rawPost sends one JSON-RPC message to a Streamable HTTP endpoint and
+// returns the status and the session ID the answer issued.
+func rawPost(t *testing.T, ctx context.Context, endpoint, session, protocol string, id int, method string, params any) (int, string) {
+	t.Helper()
+	body, err := jsonrpc.EncodeMessage(rawRequest(t, id, method, params))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if session != "" {
+		req.Header.Set("Mcp-Session-Id", session)
+	}
+	if protocol != "" {
+		req.Header.Set("Mcp-Protocol-Version", protocol)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, resp.Header.Get("Mcp-Session-Id")
+}
+
+// This fails if Handler hashes a session ID only the request carried (in
+// stateless mode, or one the server never issued), prefers the version
+// initialize said over the one a message carries, or leaves a request refused
+// without a JSON-RPC answer with no McpTransportRejected error type.
+func TestHTTPSpansDescribeTheServerSessionAndTheMessage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	initialize := map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "raw-client", "version": "1"}}
+	endpoint := func(t *testing.T, stateless bool) (*agentrail.Client, *capture, string) {
+		c, receiver := newCapture(t)
+		server := sdk.NewServer(&sdk.Implementation{Name: "synthetic-server", Version: "1.0"}, nil)
+		app := httptest.NewServer(agentrailmcp.Handler(c, sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: stateless})))
+		t.Cleanup(app.Close)
+		return c, receiver, app.URL
+	}
+	t.Run("stateless", func(t *testing.T) {
+		c, receiver, url := endpoint(t, true)
+		if status, _ := rawPost(t, ctx, url, "client-made-id", "2025-11-25", 1, "tools/list", map[string]any{}); status != http.StatusOK {
+			t.Fatalf("status %d", status)
+		}
+		span := named1(t, spans(t, c, receiver), "mcp.tools/list")
+		if has(span, key(t, "sessionHash")) || attr(span, key(t, "protocolVersion")) != "2025-11-25" {
+			t.Fatalf("stateless span: %v", span)
+		}
+	})
+	t.Run("stateful", func(t *testing.T) {
+		c, receiver, url := endpoint(t, false)
+		status, issued := rawPost(t, ctx, url, "", "", 1, "initialize", initialize)
+		if status != http.StatusOK || issued == "" {
+			t.Fatalf("initialize: status %d, session %q", status, issued)
+		}
+		rawPost(t, ctx, url, issued, "2025-11-25", 0, "notifications/initialized", map[string]any{})
+		rawPost(t, ctx, url, issued, "2025-06-18", 2, "tools/list", map[string]any{})
+		if status, _ := rawPost(t, ctx, url, "never-issued", "2025-11-25", 3, "prompts/list", map[string]any{}); status < 400 {
+			t.Fatalf("unknown session accepted: %d", status)
+		}
+		got := spans(t, c, receiver)
+		list := named1(t, got, "mcp.tools/list")
+		if attr(list, key(t, "sessionHash")) != handoff.Hash("synthetic-key", issued) || attr(list, key(t, "protocolVersion")) != "2025-06-18" {
+			t.Fatalf("issued session or carried version lost: %v", list)
+		}
+		refused := named1(t, got, "mcp.prompts/list")
+		if has(refused, key(t, "sessionHash")) || has(refused, key(t, "errorCode")) || refused.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || attr(refused, "error.type") != "McpTransportRejected" {
+			t.Fatalf("refused request: %v", refused)
+		}
+	})
+}
+
 // This fails if payloads are sent when the redact hook drops them, if the
 // hook's result is not what is sent, if a panicking hook breaks the call, or
 // if a hook that panics or returns invalid JSON is not reported as
@@ -501,7 +586,8 @@ func TestPayloadsFollowTheRedactHook(t *testing.T) {
 }
 
 // This fails if a result too large for one export is sent whole (the export
-// fails and the span is lost) instead of being cut to fit as valid UTF-8.
+// fails and the span is lost) instead of being cut, as valid UTF-8, so that
+// both payloads together fill the contract's limits.mcpPayloadBytes.
 func TestOversizedResultIsTruncatedToFitOneExport(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -513,9 +599,9 @@ func TestOversizedResultIsTruncatedToFitOneExport(t *testing.T) {
 			codes = append(codes, e.Code)
 			mu.Unlock()
 		}
-		o.MCP.CapturePayloads = true
+		o.MCP = agentrail.MCPOptions{CapturePayloads: true, Redact: func(p agentrail.MCPPayload) (agentrail.MCPPayload, bool) { return p, true }}
 	})
-	limit := contract(t).OTLP.Limits.BodyBytes
+	limit := contract(t).OTLP.Limits.MCPPayloadBytes
 	large := strings.Repeat("é", limit/2+1024) // over the limit in bytes, two per rune
 	server := sdk.NewServer(&sdk.Implementation{Name: "synthetic-server", Version: "1.0"}, nil)
 	sdk.AddTool(server, &sdk.Tool{Name: "large"}, agentrailmcp.Tool(c, "large", func(ctx context.Context, req *sdk.CallToolRequest, in input) (*sdk.CallToolResult, output, error) {
@@ -532,8 +618,9 @@ func TestOversizedResultIsTruncatedToFitOneExport(t *testing.T) {
 		t.Fatalf("large call failed: %v", err)
 	}
 	span := named1(t, byLayer(t, spans(t, c, receiver), "transport"), "mcp.tools/call:large")
-	response := attr(span, key(t, "responsePayload"))
-	if !boolValue(span, key(t, "responseTruncated")) || has(span, key(t, "requestTruncated")) || len(response) == 0 || len(response) >= limit || !utf8.ValidString(response) || !strings.Contains(attr(span, key(t, "requestPayload")), "small") {
+	response, request := attr(span, key(t, "responsePayload")), attr(span, key(t, "requestPayload"))
+	// Together within the contract's limit, the longer cut to fill it.
+	if total := len(request) + len(response); !boolValue(span, key(t, "responseTruncated")) || has(span, key(t, "requestTruncated")) || total > limit || total < limit-1 || !utf8.ValidString(response) || !strings.Contains(request, "small") {
 		t.Fatalf("not cut to fit: %d bytes, truncated=%v", len(response), boolValue(span, key(t, "responseTruncated")))
 	}
 	if n, _ := intValue(span, key(t, "responseBytes")); int(n) <= limit {

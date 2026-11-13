@@ -17,14 +17,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// The contract's otlp.limits; a test holds them to testdata/sdk-contract.json.
 const (
-	// exportBodyBytes is the collector's limit on one export body.
-	exportBodyBytes = 16 << 20
-	// batchBytes leaves headroom under it for framing and estimate error.
-	batchBytes = exportBodyBytes - 1<<20
-	// recordPayloadBytes is the most payload text one span carries, so that a
-	// span always fits one export on its own.
-	recordPayloadBytes = batchBytes - 64<<10
+	// batchBytes is exportBatchBytes: a span batch closes before its estimated
+	// size passes it, under the collector's 16 MiB body limit.
+	batchBytes = 15 << 20
+	// recordPayloadBytes is mcpPayloadBytes: the most payload text one span
+	// carries, both payloads together, so that a span always fits one export.
+	recordPayloadBytes = 14 << 20
 	// payloadBudgetBytes bounds payload text held per span queue, in flight included.
 	payloadBudgetBytes = 64 << 20
 )
@@ -143,6 +143,9 @@ func (t *transportSpan) end(o mcpspan.Outcome) {
 		attrs = append(attrs, attribute.Int("agentrail.mcp.request.bytes", t.call.RequestBytes))
 	}
 	failed := o.Rejected
+	if o.Rejected {
+		attrs = append(attrs, attribute.String("error.type", "McpTransportRejected"))
+	}
 	if o.Responded {
 		attrs = append(attrs, attribute.Int("agentrail.mcp.response.bytes", o.ResponseBytes))
 		if o.ErrorCode != nil {
@@ -174,24 +177,23 @@ func (c *Client) mcpPayload(ctx context.Context, p MCPPayload, responded bool) (
 	if !responded {
 		p.Response = nil
 	}
-	if redact := c.options.MCP.Redact; redact != nil {
-		keep, panicked := false, true
-		func() {
-			defer func() {
-				if panicked {
-					recover()
-				}
-			}()
-			p, keep = redact(p)
-			panicked = false
+	// resolve refuses payload capture without a hook.
+	keep, panicked := false, true
+	func() {
+		defer func() {
+			if panicked {
+				recover()
+			}
 		}()
-		if panicked {
-			c.report(ctx, "payload_redact_failed", "traces", 1)
-			return nil, 0
-		}
-		if !keep {
-			return nil, 0
-		}
+		p, keep = c.options.MCP.Redact(p)
+		panicked = false
+	}()
+	if panicked {
+		c.report(ctx, "payload_redact_failed", "traces", 1)
+		return nil, 0
+	}
+	if !keep {
+		return nil, 0
 	}
 	for _, text := range [][]byte{p.Request, p.Response} {
 		if len(text) > 0 && (!utf8.Valid(text) || !json.Valid(text)) {
@@ -232,7 +234,7 @@ func fitPayload(request, response string, limit int) (string, bool, string, bool
 		return r, cut, response, false
 	}
 	q, qc := cutUTF8(request, half)
-	r, rc := cutUTF8(response, limit-len(q))
+	r, rc := cutUTF8(response, limit-half)
 	return q, qc, r, rc
 }
 func cutUTF8(s string, n int) (string, bool) {
