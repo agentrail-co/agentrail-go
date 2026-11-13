@@ -493,7 +493,7 @@ func rawPost(t *testing.T, ctx context.Context, endpoint, session, protocol stri
 }
 
 // This fails if Handler hashes a session ID only the request carried (in
-// stateless mode, or one the server never issued), prefers the version
+// stateless mode), prefers the version
 // initialize said over the one a message carries, or leaves a request refused
 // without a JSON-RPC answer with no McpTransportRejected error type.
 func TestHTTPSpansDescribeTheServerSessionAndTheMessage(t *testing.T) {
@@ -525,16 +525,17 @@ func TestHTTPSpansDescribeTheServerSessionAndTheMessage(t *testing.T) {
 		}
 		rawPost(t, ctx, url, issued, "2025-11-25", 0, "notifications/initialized", map[string]any{})
 		rawPost(t, ctx, url, issued, "2025-06-18", 2, "tools/list", map[string]any{})
-		if status, _ := rawPost(t, ctx, url, "never-issued", "2025-11-25", 3, "prompts/list", map[string]any{}); status < 400 {
-			t.Fatalf("unknown session accepted: %d", status)
+		// Before 2026-07-28 the SDK refuses an unknown method in plain text.
+		if status, _ := rawPost(t, ctx, url, issued, "2025-11-25", 3, "unknown/method", map[string]any{}); status != http.StatusBadRequest {
+			t.Fatalf("unknown method: status %d", status)
 		}
 		got := spans(t, c, receiver)
 		list := named1(t, got, "mcp.tools/list")
 		if attr(list, key(t, "sessionHash")) != handoff.Hash("synthetic-key", issued) || attr(list, key(t, "protocolVersion")) != "2025-06-18" {
 			t.Fatalf("issued session or carried version lost: %v", list)
 		}
-		refused := named1(t, got, "mcp.prompts/list")
-		if has(refused, key(t, "sessionHash")) || has(refused, key(t, "errorCode")) || refused.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || attr(refused, "error.type") != "McpTransportRejected" {
+		refused := named1(t, got, "mcp.unknown/method")
+		if has(refused, key(t, "errorCode")) || refused.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || attr(refused, "error.type") != "McpTransportRejected" {
 			t.Fatalf("refused request: %v", refused)
 		}
 	})

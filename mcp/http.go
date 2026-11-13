@@ -80,29 +80,36 @@ func (h *httpCapture) forget(id string) {
 	delete(h.sessions, id)
 }
 
-// readBody reads up to messageLimit and gives the handler an identical body.
-func readBody(r *http.Request) ([]byte, io.ReadCloser, bool) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, r.Body, false
-	}
-	data, err := io.ReadAll(io.LimitReader(r.Body, messageLimit+1))
-	body := struct {
-		io.Reader
-		io.Closer
-	}{io.MultiReader(bytes.NewReader(data), errReader{err}, r.Body), r.Body}
-	if err != nil || len(data) > messageLimit {
-		return nil, body, false
-	}
-	return data, body, true
+// teeBody copies a request body as the handler reads it and, when the handler
+// has read it all, passes the copy to done before returning io.EOF. The MCP
+// SDK reads a POST body whole before acting on it, so done runs before any
+// message is handled; a body the SDK refuses unread, or stops reading at its
+// size limit, never reaches done. A body over messageLimit is not kept.
+type teeBody struct {
+	io.ReadCloser
+	data  []byte
+	over  bool
+	fired bool
+	done  func([]byte)
 }
 
-type errReader struct{ err error }
-
-func (e errReader) Read([]byte) (int, error) {
-	if e.err == nil {
-		return 0, io.EOF
+func (b *teeBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if !b.over {
+		if len(b.data)+n > messageLimit {
+			b.over, b.data = true, nil
+		} else {
+			b.data = append(b.data, p[:n]...)
+		}
 	}
-	return 0, e.err
+	if err == io.EOF && !b.fired {
+		b.fired = true
+		if !b.over {
+			b.done(b.data)
+		}
+		b.data = nil
+	}
+	return n, err
 }
 
 // decode reads one JSON-RPC message or a batch of them.
@@ -128,20 +135,17 @@ func decode(data []byte) []jsonrpc.Message {
 }
 
 func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
-	data, requestBody, ok := readBody(r)
-	r = r.WithContext(r.Context())
-	r.Body = requestBody
-	if !ok {
+	if r.Body == nil || r.Body == http.NoBody {
 		h.next.ServeHTTP(w, r)
 		return
 	}
-	messages := decode(data)
+	r = r.WithContext(r.Context())
 	if id := r.URL.Query().Get("sessionid"); id != "" {
 		h.mu.Lock()
 		t := h.sse[id]
 		h.mu.Unlock()
 		if t != nil {
-			h.ssePost(w, r, t, messages)
+			h.ssePost(w, r, t)
 			return
 		}
 	}
@@ -161,18 +165,23 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 		t.setSession(requested)
 	}
 	key := headerKeyOf(r.Header)
+	var mu sync.Mutex // the SDK may write from its session goroutine
 	initialize := false
-	for _, m := range messages {
-		if req, ok := m.(*jsonrpc.Request); ok && req.Method == "initialize" {
-			initialize = true
+	received := r.Context()
+	r.Body = &teeBody{ReadCloser: r.Body, done: func(data []byte) {
+		for _, m := range decode(data) {
+			if req, ok := m.(*jsonrpc.Request); ok && req.Method == "initialize" {
+				mu.Lock()
+				initialize = true
+				mu.Unlock()
+			}
+			t.receive(received, m, key)
 		}
-		t.receive(r.Context(), m, key)
-	}
+	}}
 	// A stateful session's handlers run in its initialize request's context,
 	// so this marker outlives the request: it is a fresh token no call is
 	// registered under, never the header key whose address may be reused.
 	ctx := context.WithValue(r.Context(), activeKey{}, new(postMarker))
-	var mu sync.Mutex // the SDK may write from its session goroutine
 	status := 0
 	// Deferred so a panicking handler leaves nothing registered.
 	defer func() {
@@ -243,19 +252,30 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 }
 
 // ssePost records a legacy SSE message; its answer arrives on the stream.
-func (h *httpCapture) ssePost(w http.ResponseWriter, r *http.Request, t *tracker, messages []jsonrpc.Message) {
-	added := []*call{}
-	for _, m := range messages {
-		if c := t.receive(r.Context(), m, t); c != nil {
-			added = append(added, c)
-		}
-	}
+func (h *httpCapture) ssePost(w http.ResponseWriter, r *http.Request, t *tracker) {
 	var mu sync.Mutex
+	added := []*call{}
+	received := r.Context()
+	r.Body = &teeBody{ReadCloser: r.Body, done: func(data []byte) {
+		for _, m := range decode(data) {
+			if c := t.receive(received, m, t); c != nil {
+				mu.Lock()
+				added = append(added, c)
+				mu.Unlock()
+			}
+		}
+	}}
 	status := 0
-	finished := false
+	returned := false
+	// Deferred so a panicking handler leaves nothing registered. Only this
+	// POST's calls end here: the stream's tracker holds other POSTs' too, and
+	// abandon with none given would end them all.
 	defer func() {
-		if !finished { // the handler panicked
-			t.abandon(false, added...)
+		mu.Lock()
+		ended, rejected := added, status >= 400
+		mu.Unlock()
+		if len(ended) > 0 && (rejected || !returned) {
+			t.abandon(rejected, ended...)
 		}
 	}()
 	h.next.ServeHTTP(capture(w, func(code int) {
@@ -265,12 +285,7 @@ func (h *httpCapture) ssePost(w http.ResponseWriter, r *http.Request, t *tracker
 			status = code
 		}
 	}, func([]byte) {}), r)
-	mu.Lock()
-	defer mu.Unlock()
-	finished = true
-	if status >= 400 {
-		t.abandon(true, added...)
-	}
+	returned = true
 }
 
 // stream follows a GET stream: a legacy SSE session, or a Streamable HTTP

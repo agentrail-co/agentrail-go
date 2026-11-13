@@ -184,17 +184,25 @@ notification), `agentrail.mcp.jsonrpc.error_code` for a JSON-RPC error (omitted 
 is outside 32 bits, which the collector refuses) and
 `agentrail.mcp.result.is_error` for a failed tool result. Both set status ERROR,
 with `error.type` `McpJsonRpcError` or `McpOperationError`. A request the HTTP
-layer refuses with status 400 or more and no JSON-RPC answer (a plain-text 4xx
-in older protocols) is ERROR with `error.type` `McpTransportRejected` and no code. The span ends when the response is written, before the
+layer refuses with status 400 or more and no JSON-RPC answer after reading it
+(in protocols before 2026-07-28, a plain-text 400 for an unknown method) is
+ERROR with `error.type` `McpTransportRejected` and no code. A request whose
+JSON-RPC id repeats one still pending ends the earlier call the same way. The span ends when the response is written, before the
 client can read it.
 
 `Transport` gives each request an empty `*sdk.RequestExtra` when its transport
 supplies none, which is how a callback finds its transport span. Like
 `sdk.LoggingTransport`, it hides the SDK's private connection hooks, so a stdio
 session no longer refuses JSON-RPC batches in protocol 2025-06-18 and later.
-`Handler` reads each POST body (up to 64 MiB; a larger one passes through
-unrecorded) and the responses and event streams the SDK writes, preserving
-streaming and the writer's optional interfaces. It remembers the client
+`Handler` never reads a POST body itself: it copies the bytes as the SDK reads
+them and records the messages when the SDK has read the body whole, which the
+SDK does before handling any of them. The SDK's own checks and limits (Host and
+cross-origin checks, an unknown session, `MaxRequestBodyBytes`, 4 MiB by
+default) therefore run first and unchanged, and a request they refuse before
+or while reading the body has no transport span. A body over 64 MiB, possible
+only when the application raises that limit, is not recorded. `Handler` also
+observes the responses and event streams the SDK writes, preserving streaming
+and the writer's optional interfaces. It remembers the client
 metadata of the 4,096 most recent stateful sessions.
 
 **Handler spans.** Wrap registration callbacks with `Tool`, `ToolHandler`,
