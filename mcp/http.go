@@ -318,7 +318,9 @@ func (h *httpCapture) stream(w http.ResponseWriter, r *http.Request) {
 			delete(h.sse, sessionID)
 			h.mu.Unlock()
 		}
-		t.abandon(false)
+		// Closed, not only abandoned: a POST that found this stream's tracker
+		// just before it ended must not register a call nobody cleans up.
+		t.close()
 	}()
 	// An SSE session's handlers run in this request's context.
 	ctx := context.WithValue(r.Context(), activeKey{}, any(t))
