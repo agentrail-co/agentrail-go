@@ -158,24 +158,75 @@ configured base propagator. Agentrail shutdown never shuts down a customer provi
 
 ## MCP
 
-Import `github.com/agentrail-co/agentrail-go/mcp` and wrap public registration
-callbacks with `Tool`, `ToolHandler`, `Resource`, or `Prompt`. See
-[the MCP example](examples/mcp/main.go). Pass stable registration names, never
-caller-supplied resource URIs. The original typed output, result, error and panic
-are preserved. Tool `IsError` results mark failure without replacing the result.
+Import `github.com/agentrail-co/agentrail-go/mcp`. See
+[the MCP example](../examples/mcp/main.go).
+
+**Transport spans.** `Handler(capture, h)` wraps an `sdk.StreamableHTTPHandler`
+or `sdk.SSEHandler`; mount it inside `capture.Middleware`. `Transport(capture, t)`
+wraps a transport the application passes to `Server.Connect` (stdio, in-memory,
+`IOTransport`). Nothing is patched: without a wrapper there are no transport
+spans. Each JSON-RPC request or notification the server receives becomes one
+span and one step (`agentrail.step.surface` `mcp`; kind `tool.call` for
+`tools/call`, `mcp.<method>` otherwise), including `initialize`, `tools/list`,
+`notifications/initialized` and requests the SDK refuses before any middleware,
+such as an unknown method. Names are `mcp.<method>`, or `mcp.<method>:<target>`
+where the target is the tool or prompt name, or the resource URI, the client
+sent, bounded to 256 UTF-16 units. Attributes are `agentrail.mcp.layer`
+`transport`, `agentrail.mcp.method` (left off when it does not match the
+collector's pattern), client name, version and protocol, the keyed hash of the
+`Mcp-Session-Id` (the same HMAC as principal IDs; absent for stdio, in-memory,
+SSE and stateless sessions), the encoded size in bytes of the request and of
+its response (as `jsonrpc.EncodeMessage` writes them; no response size for a
+notification), `agentrail.mcp.jsonrpc.error_code` for a JSON-RPC error and
+`agentrail.mcp.result.is_error` for a failed tool result. Both set status ERROR,
+with `error.type` `McpJsonRpcError` or `McpOperationError`. A request the HTTP
+layer refuses without a JSON-RPC answer (a plain-text 4xx in older protocols)
+is ERROR with no code. The span ends when the response is written, before the
+client can read it.
+
+`Transport` gives each request an empty `*sdk.RequestExtra` when its transport
+supplies none, which is how a callback finds its transport span. Like
+`sdk.LoggingTransport`, it hides the SDK's private connection hooks, so a stdio
+session no longer refuses JSON-RPC batches in protocol 2025-06-18 and later.
+`Handler` reads each POST body (up to 64 MiB; a larger one passes through
+unrecorded) and the responses and event streams the SDK writes, preserving
+streaming and the writer's optional interfaces. It remembers the client
+metadata of the 4,096 most recent stateful sessions.
+
+**Handler spans.** Wrap registration callbacks with `Tool`, `ToolHandler`,
+`Resource` or `Prompt`. Pass stable registration names, which name the
+callback's span. Inside a transport span the callback's span is its child,
+`agentrail.mcp.layer` `handler`, and no step, so a tool call counts once. With
+no transport wrapper it is the call's step, as before, with `layer` `handler`
+and `agentrail.mcp.method`. The original typed output, result, error and panic
+are preserved; tool `IsError` results mark failure without replacing the result.
+Client metadata is untrusted descriptive context, never identity.
+
+**Payloads, opt-in.** By default no argument, result, prompt text or resource
+content is sent. Set `Options.MCP.CapturePayloads` to send each request's params
+as `agentrail.mcp.request.payload` and its result, or JSON-RPC error object, as
+`agentrail.mcp.response.payload`, as JSON text. `Options.MCP.Redact` receives an
+`MCPPayload{Method, Name, Request, Response}` copy and returns what to send, or
+false to send none. A panic or invalid JSON drops that payload and reports
+`payload_redact_failed` or `payload_invalid`; the MCP call is unaffected.
+Payloads have no length limit of their own and are exempt from the string caps
+elsewhere; only a span whose payloads could not fit one 16 MiB export is cut, as
+valid UTF-8, with `agentrail.mcp.request.truncated` or `.response.truncated`
+set. At most 64 MiB of payload text is held per span queue, the batch in flight
+included; past it a span is sent without its payloads and
+`payload_budget_exceeded` is reported. The collector keeps payloads only for a
+source whose Admin turned payload capture on.
 
 Tests exercise official SDK 1.8.0 modern 2026-07-28 and legacy 2025-11-25 protocols
-on memory/Streamable HTTP, and legacy 2024-11-05 SSE. Modern HTTP requires the
-SDK's stateless server mode. Client/protocol metadata comes from the SDK's public
-request methods; it is untrusted descriptive context. No cross-caller initialize
-cache is kept. Tool arguments, outputs, prompt text and resource URIs are excluded.
-Each operation becomes a nested MCP milestone or its own scope outside HTTP.
+on memory and Streamable HTTP (stateful and stateless), and legacy 2024-11-05 SSE.
+Modern HTTP requires the SDK's stateless server mode.
 
 ## Delivery and shutdown
 
 Per signal defaults: 2,048 queued/in-flight records, 128 records per batch, a
 one-second schedule, five-second export timeout and ten-second flush/shutdown
-deadlines. `QueueOptions` overrides must be positive; batch size must fit capacity
+deadlines. A span batch also closes before its estimated size would pass 15 MiB,
+under the collector's 16 MiB body limit. `QueueOptions` overrides must be positive; batch size must fit capacity
 and the collector's 10,000-record limit. Flush/shutdown deadlines must cover the
 export timeout. One batch exports at a time per signal; official exporters retry
 retryable responses within the export deadline. Permanent rejections and exhausted

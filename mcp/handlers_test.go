@@ -26,6 +26,12 @@ type capture struct {
 
 func newCapture(t *testing.T) (*agentrail.Client, *capture) {
 	t.Helper()
+	return newCaptureWith(t, nil)
+}
+
+// newCaptureWith lets a test change the options before the client is made.
+func newCaptureWith(t *testing.T, configure func(*agentrail.Options)) (*agentrail.Client, *capture) {
+	t.Helper()
 	r := new(capture)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		raw, err := io.ReadAll(req.Body)
@@ -50,7 +56,11 @@ func newCapture(t *testing.T) (*agentrail.Client, *capture) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	c, err := agentrail.New(context.Background(), agentrail.Options{Collector: agentrail.CollectorOptions{Endpoint: server.URL, Secret: "synthetic-source"}, HashKey: "synthetic-key", ServiceName: "mcp-test"})
+	options := agentrail.Options{Collector: agentrail.CollectorOptions{Endpoint: server.URL, Secret: "synthetic-source"}, HashKey: "synthetic-key", ServiceName: "mcp-test"}
+	if configure != nil {
+		configure(&options)
+	}
+	c, err := agentrail.New(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +192,7 @@ func TestOfficialServerOperationsOverTransports(t *testing.T) {
 					t.Fatalf("unregistered span name %q", span.Name)
 				}
 				delete(expected, span.Name)
-				if attr(span, "rpc.method") != operation.method || attr(span, "agentrail.step.kind") != operation.kind || attr(span, "agentrail.step.surface") != "mcp" || attr(span, "agentrail.mcp.client.name") != "synthetic-caller" || attr(span, "agentrail.mcp.client.version") != "2.3" || attr(span, "agentrail.mcp.protocol.version") != tc.version {
+				if attr(span, "agentrail.mcp.method") != operation.method || attr(span, "agentrail.mcp.layer") != "handler" || attr(span, "agentrail.step.kind") != operation.kind || attr(span, "agentrail.step.surface") != "mcp" || attr(span, "agentrail.mcp.client.name") != "synthetic-caller" || attr(span, "agentrail.mcp.client.version") != "2.3" || attr(span, "agentrail.mcp.protocol.version") != tc.version {
 					t.Fatalf("missing MCP metadata: %v", span)
 				}
 				failed := span.Name == "mcp.tools/call:registered.failure" || span.Name == "mcp.tools/call:registered.lowlevel"

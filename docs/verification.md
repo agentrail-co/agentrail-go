@@ -83,3 +83,19 @@ reference exported, the namespace left out of the hash, evidence copied to
 children through request state, a plugin-only call given a workflow role, the
 namespace UUID unchecked, the event-name length unchecked, invalid evidence
 dropping the milestone, and invalid evidence not reported.
+
+## 0.3.0 checks (MCP transport capture and payloads, toolchain go1.26.11)
+
+Run on macOS arm64 with go1.26.11: `gofmt`, `go mod tidy -diff`, `go build`,
+`go vet`, `go test -race -count=1 ./...` (MCP tests also 10 times under race),
+the handoff fuzz target for 10 seconds, `GOTOOLCHAIN=go1.26.0 go test ./...`,
+`scripts/check-consumer.sh` (now compiles `mcp.Handler`, `mcp.Transport` and
+`MCPOptions` from another module) and `govulncheck` v1.9.0: no vulnerabilities
+found. Tests read attribute names and limits from `testdata/sdk-contract.json`.
+The real receiver gate was not run: the Argus contract was uncommitted.
+Mutations caught: payloads exported with capture off, a redact hook's drop
+ignored, an oversized result sent whole instead of truncated, the JSON-RPC
+error code lost, an unknown-method request never given a transport span, a
+handler span counted as a second step, an attribute the contract does not name,
+the stateful Streamable HTTP session hash dropped, the payload budget not
+enforced or never released, and span batches closed by record count alone.

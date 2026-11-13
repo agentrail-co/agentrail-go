@@ -46,16 +46,32 @@ func validSurface(s Surface) bool {
 // StartMilestone starts a scoped operation. Call the returned end function once
 // with the application error. Use WithMilestone to preserve panics automatically.
 func (c *Client) StartMilestone(ctx context.Context, name string, d MilestoneContext) (context.Context, func(error)) {
-	if suppressed(ctx) {
+	ctx, span := c.start(ctx, name, d, nil)
+	if span == nil {
 		return ctx, func(error) {}
+	}
+	return ctx, func(err error) {
+		if err != nil {
+			span.SetStatus(codes.Error, "")
+			span.SetAttributes(attribute.String("error.type", bounded(reflect.TypeOf(err).String(), 4096)))
+		}
+		span.End()
+	}
+}
+
+// start opens a milestone span, or returns a nil span after reporting why not.
+// An mcp mark adds MCP attributes and can make the span no step.
+func (c *Client) start(ctx context.Context, name string, d MilestoneContext, mcp *mcpMark) (context.Context, trace.Span) {
+	if suppressed(ctx) {
+		return ctx, nil
 	}
 	if err := c.ready(); err != nil {
 		c.report(ctx, "closed", "traces", 1)
-		return ctx, func(error) {}
+		return ctx, nil
 	}
 	if name == "" || d.Kind == "" || !validText(name, 256) || !validText(d.Kind, 256) || !validSurface(d.Surface) {
 		c.report(ctx, "invalid_milestone", "context", 1)
-		return ctx, func(error) {}
+		return ctx, nil
 	}
 	if d.MCP != nil {
 		copy := *d.MCP
@@ -79,7 +95,7 @@ func (c *Client) StartMilestone(ctx context.Context, name string, d MilestoneCon
 		ctx = trace.ContextWithSpanContext(ctx, trace.SpanContext{})
 		ctx = context.WithValue(ctx, stateKey{c}, s)
 	}
-	m := &mark{name: name, details: d, performance: performance}
+	m := &mark{name: name, details: d, performance: performance, mcp: mcp}
 	links := []trace.Link{}
 	if !trace.SpanContextFromContext(ctx).IsValid() {
 		links = c.state(ctx).links
@@ -90,13 +106,7 @@ func (c *Client) StartMilestone(ctx context.Context, name string, d MilestoneCon
 	if !span.IsRecording() {
 		c.report(ctx, "entry_not_recording", "traces", 1)
 	}
-	return ctx, func(err error) {
-		if err != nil {
-			span.SetStatus(codes.Error, "")
-			span.SetAttributes(attribute.String("error.type", bounded(reflect.TypeOf(err).String(), 4096)))
-		}
-		span.End()
-	}
+	return ctx, span
 }
 func (c *Client) Milestone(ctx context.Context, name string, d MilestoneContext) {
 	_, end := c.StartMilestone(ctx, name, d)

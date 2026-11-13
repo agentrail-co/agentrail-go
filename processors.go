@@ -72,9 +72,14 @@ func NewProcessors(ctx context.Context, input Options) (*Processors, error) {
 	}
 	c := &Client{options: o, resource: resourceOf(o), shutdownDone: make(chan struct{})}
 	cfg := delivery.Config{MaxRecords: o.Queue.MaxRecords, BatchSize: o.Queue.BatchSize, ScheduledDelay: o.Queue.ScheduledDelay, ExportTimeout: o.Queue.ExportTimeout, FlushTimeout: o.Queue.FlushTimeout, ShutdownTimeout: o.Queue.ShutdownTimeout}
-	c.spans = delivery.New(cfg, func(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	spanCfg := cfg
+	spanCfg.MaxBatchBytes = batchBytes
+	c.spans = delivery.NewWithHooks(spanCfg, func(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 		return tx.ExportSpans(suppress(ctx), spans)
-	}, func(i delivery.Issue) { c.report(context.Background(), i.Code, "traces", i.Count) })
+	}, func(i delivery.Issue) { c.report(context.Background(), i.Code, "traces", i.Count) }, delivery.Hooks[sdktrace.ReadOnlySpan]{
+		Size: func(s sdktrace.ReadOnlySpan) int { return s.(sanitizedSpan).size },
+		Done: func(s sdktrace.ReadOnlySpan) { c.payloadBytes.Add(-int64(s.(sanitizedSpan).payload)) },
+	})
 	c.logs = delivery.New(cfg, func(ctx context.Context, records []sdklog.Record) error { return lx.Export(suppress(ctx), records) }, func(i delivery.Issue) { c.report(context.Background(), i.Code, "logs", i.Count) })
 	sp := &spanProcessor{client: c, shutdownExporter: tx.Shutdown}
 	lp := &logProcessor{client: c}
@@ -107,7 +112,17 @@ func (p *spanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 	if !ok {
 		return
 	}
-	p.client.spans.Add(p.client.copySpan(s, v.(spanMeta)))
+	c := p.client
+	span := c.copySpan(s, v.(spanMeta)).(sanitizedSpan)
+	if span.payload > 0 && c.payloadBytes.Add(int64(span.payload)) > payloadBudgetBytes {
+		// Past the budget the span is kept and only its payload is dropped.
+		c.payloadBytes.Add(-int64(span.payload))
+		span = span.withoutPayload()
+		c.report(context.Background(), "payload_budget_exceeded", "traces", 1)
+	}
+	if !c.spans.Add(span) {
+		c.payloadBytes.Add(-int64(span.payload))
+	}
 }
 func (p *spanProcessor) ForceFlush(ctx context.Context) error { return p.client.spans.Flush(ctx) }
 func (p *spanProcessor) Shutdown(ctx context.Context) error {

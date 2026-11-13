@@ -3,6 +3,7 @@ package agentrail
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,7 +17,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
-const Version = "0.2.1"
+const Version = "0.3.0"
 
 type CollectorOptions struct {
 	Endpoint string
@@ -49,6 +50,28 @@ type IPLocation struct {
 	Source                LocationSource
 }
 
+// MCPPayload is one MCP message the server received and its answer, as the
+// MCP SDK encoded them. Request is the request's params; Response is the
+// result, or the JSON-RPC error object. Name is the tool or prompt name, or the
+// resource URI, where the method has one.
+type MCPPayload struct {
+	Method, Name      string
+	Request, Response json.RawMessage
+}
+
+// MCPOptions configures capture by the mcp package's transport wrappers.
+type MCPOptions struct {
+	// CapturePayloads sends each request's params and its result as JSON text.
+	// Off by default: without it no argument, result or resource content is sent.
+	CapturePayloads bool
+	// Redact runs on every payload before it is queued, on the goroutine that
+	// wrote the response. Return the payload to send, which must stay valid JSON,
+	// or false to send none. It receives copies it may change. A panic, or JSON
+	// that is not valid, drops the payload and is reported to OnError; the MCP
+	// call is never affected.
+	Redact func(MCPPayload) (MCPPayload, bool)
+}
+
 // Options configures backend capture. Secrets are supplied by the application;
 // this package never reads environment variables implicitly.
 type Options struct {
@@ -61,6 +84,7 @@ type Options struct {
 	IncomingLocation             func(*http.Request) (IPLocation, error)
 	Logs                         LogsOptions
 	Queue                        QueueOptions
+	MCP                          MCPOptions
 	Propagator                   propagation.TextMapPropagator
 	OnError                      func(context.Context, CaptureError)
 	endpointOrigin, endpointPath string

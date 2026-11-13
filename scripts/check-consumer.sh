@@ -53,6 +53,10 @@ func TestPublicInstallation(t *testing.T){
  c.Milestone(context.Background(),"plugin.invoked",agentrail.MilestoneContext{Surface:agentrail.SurfaceMCP,Kind:"mcp.tool",Performance:&agentrail.PerformanceContext{Environment:agentrail.EnvironmentTest,Plugin:&agentrail.PluginInvocation{BindingID:"22222222-2222-4222-8222-222222222222",InvocationID:"consumer"}}})
  _ = captureslog.NewHandler(c,slog.Default().Handler())
  _ = capturemcp.ToolHandler(c,"operation",func(context.Context,*sdk.CallToolRequest)(*sdk.CallToolResult,error){return &sdk.CallToolResult{},nil})
+ _ = capturemcp.Handler(c,http.NotFoundHandler())
+ st,_ := sdk.NewInMemoryTransports()
+ _ = capturemcp.Transport(c,st)
+ _ = agentrail.MCPOptions{CapturePayloads:true,Redact:func(p agentrail.MCPPayload)(agentrail.MCPPayload,bool){return p,false}}
  if err:=c.Shutdown(context.Background());err!=nil{t.Fatal(err)}
 }
 GO
