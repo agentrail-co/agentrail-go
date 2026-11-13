@@ -10,6 +10,9 @@ import (
 
 	agentrail "github.com/agentrail-co/agentrail-go"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type requestMetadata interface {
@@ -17,8 +20,8 @@ type requestMetadata interface {
 	ProtocolVersion() string
 }
 
-func details(req requestMetadata, method, kind string) agentrail.MilestoneContext {
-	metadata := &agentrail.MCPContext{Method: method, Protocol: req.ProtocolVersion()}
+func details(req requestMetadata, method, kind, name string) agentrail.MilestoneContext {
+	metadata := &agentrail.MCPContext{Method: method, Protocol: req.ProtocolVersion(), Name: name}
 	if client := req.ClientInfo(); client != nil {
 		metadata.Client = client.Name
 		metadata.ClientVersion = client.Version
@@ -44,9 +47,14 @@ func spanName(method, name string) string {
 	return label
 }
 
-type toolResultError struct{}
-
-func (toolResultError) Error() string { return "MCP tool reported failure" }
+// markToolError marks the milestone span failed for a tool result with
+// IsError, with the OpenTelemetry MCP convention's error.type, so it reads
+// apart from a handler that returned an error or panicked.
+func markToolError(ctx context.Context) {
+	span := trace.SpanFromContext(ctx)
+	span.SetStatus(codes.Error, "")
+	span.SetAttributes(attribute.String("error.type", "tool_error"))
+}
 
 // Tool wraps a typed handler for sdk.AddTool. name must be a stable name chosen
 // at registration, never a value from arguments. The original result, output,
@@ -54,13 +62,13 @@ func (toolResultError) Error() string { return "MCP tool reported failure" }
 // Span names are mcp.tools/call:<name>, bounded to 256 UTF-16 units.
 func Tool[In, Out any](client *agentrail.Client, name string, next sdk.ToolHandlerFor[In, Out]) sdk.ToolHandlerFor[In, Out] {
 	return func(ctx context.Context, req *sdk.CallToolRequest, in In) (result *sdk.CallToolResult, out Out, err error) {
-		client.WithMilestone(ctx, spanName("tools/call", name), details(req, "tools/call", "tool.call"), func(ctx context.Context) error {
+		client.WithMilestone(ctx, spanName("tools/call", name), details(req, "tools/call", "tool.call", name), func(ctx context.Context) error {
 			result, out, err = next(ctx, req, in)
 			if err != nil {
 				return err
 			}
 			if result != nil && result.IsError {
-				return toolResultError{}
+				markToolError(ctx)
 			}
 			return nil
 		})
@@ -72,13 +80,13 @@ func Tool[In, Out any](client *agentrail.Client, name string, next sdk.ToolHandl
 // its protocol-error semantics and marking IsError results as failures.
 func ToolHandler(client *agentrail.Client, name string, next sdk.ToolHandler) sdk.ToolHandler {
 	return func(ctx context.Context, req *sdk.CallToolRequest) (result *sdk.CallToolResult, err error) {
-		client.WithMilestone(ctx, spanName("tools/call", name), details(req, "tools/call", "tool.call"), func(ctx context.Context) error {
+		client.WithMilestone(ctx, spanName("tools/call", name), details(req, "tools/call", "tool.call", name), func(ctx context.Context) error {
 			result, err = next(ctx, req)
 			if err != nil {
 				return err
 			}
 			if result != nil && result.IsError {
-				return toolResultError{}
+				markToolError(ctx)
 			}
 			return nil
 		})
@@ -91,7 +99,7 @@ func ToolHandler(client *agentrail.Client, name string, next sdk.ToolHandler) sd
 // the requested URI. Results, errors, and panics retain their original values.
 func Resource(client *agentrail.Client, name string, next sdk.ResourceHandler) sdk.ResourceHandler {
 	return func(ctx context.Context, req *sdk.ReadResourceRequest) (result *sdk.ReadResourceResult, err error) {
-		err = client.WithMilestone(ctx, spanName("resources/read", name), details(req, "resources/read", "mcp.resources/read"), func(ctx context.Context) error { result, err = next(ctx, req); return err })
+		err = client.WithMilestone(ctx, spanName("resources/read", name), details(req, "resources/read", "mcp.resources/read", name), func(ctx context.Context) error { result, err = next(ctx, req); return err })
 		return
 	}
 }
@@ -100,7 +108,7 @@ func Resource(client *agentrail.Client, name string, next sdk.ResourceHandler) s
 // registration label. Arguments and prompt messages are never captured.
 func Prompt(client *agentrail.Client, name string, next sdk.PromptHandler) sdk.PromptHandler {
 	return func(ctx context.Context, req *sdk.GetPromptRequest) (result *sdk.GetPromptResult, err error) {
-		err = client.WithMilestone(ctx, spanName("prompts/get", name), details(req, "prompts/get", "mcp.prompts/get"), func(ctx context.Context) error { result, err = next(ctx, req); return err })
+		err = client.WithMilestone(ctx, spanName("prompts/get", name), details(req, "prompts/get", "mcp.prompts/get", name), func(ctx context.Context) error { result, err = next(ctx, req); return err })
 		return
 	}
 }

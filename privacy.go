@@ -140,10 +140,19 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 		attrs = append(attrs, attribute.Bool("agentrail.step", true), attribute.String("agentrail.step.surface", string(d.Surface)), attribute.String("agentrail.step.kind", d.Kind))
 		attrs = append(attrs, m.mark.performance...)
 		if d.MCP != nil {
+			// The OpenTelemetry MCP server span's names. A resource is named only
+			// by its URI there, which can carry what was asked for, so it gets none.
+			toolName, promptName := "", ""
+			switch d.MCP.Method {
+			case "tools/call":
+				toolName = d.MCP.Name
+			case "prompts/get":
+				promptName = d.MCP.Name
+			}
 			for _, v := range []struct {
 				k, v string
 				max  int
-			}{{"rpc.method", d.MCP.Method, 4096}, {"agentrail.mcp.client.name", d.MCP.Client, 128}, {"agentrail.mcp.client.version", d.MCP.ClientVersion, 128}, {"agentrail.mcp.protocol.version", d.MCP.Protocol, 64}} {
+			}{{"rpc.method", d.MCP.Method, 4096}, {"mcp.method.name", d.MCP.Method, 128}, {"gen_ai.tool.name", toolName, 256}, {"gen_ai.prompt.name", promptName, 256}, {"agentrail.mcp.client.name", d.MCP.Client, 128}, {"agentrail.mcp.client.version", d.MCP.ClientVersion, 128}, {"agentrail.mcp.protocol.version", d.MCP.Protocol, 64}} {
 				if v.v != "" {
 					attrs = append(attrs, attribute.String(v.k, bounded(v.v, v.max)))
 				}
