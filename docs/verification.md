@@ -121,3 +121,16 @@ the bare SDK, which read 4,194,305 bytes of the first); pending calls keep param
 payload capture; resource span names drop userinfo, query and fragment. Each
 test failed before its fix. Sizes are still measured by re-encoding, which is
 the contract's definition (the SDK's encoding, without whitespace).
+
+Thrown tool as a failed call (contract SHA-256 `a2528488…`, toolchain
+go1.26.11): a `Tool` or `ToolHandler` callback that returns an error or panics
+under `Handler` or `Transport` now marks its transport span ERROR with the
+callback span's `error.type`, and the span keeps `result.is_error` where the
+SDK answered with an `IsError` result; an `IsError` result with no error stays
+`tool_error`. `gofmt`, `go mod tidy -diff`, `go build`, `go vet`,
+`go test -race -count=1 ./...` (MCP tests also 10 times under race), the
+handoff fuzz target for 10 seconds, `scripts/check-consumer.sh` and
+`govulncheck` v1.9.0 (no vulnerabilities) passed. Mutations caught: the
+callback no longer telling its transport span (all five transport modes),
+and an `IsError` result marked as a thrown error. A panic is not exercised by
+a test: the MCP SDK does not recover one, so it ends the test process.
