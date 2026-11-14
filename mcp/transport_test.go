@@ -355,6 +355,58 @@ func TestTransportSpansOverTransports(t *testing.T) {
 	}
 }
 
+// syntheticToolError is a tool's own error, named so its type is plain to see.
+type syntheticToolError struct{}
+
+func (syntheticToolError) Error() string { return "private-thrown-error" }
+
+// This fails if a tool handler's returned error stops reaching its transport
+// span: the MCP SDK answers that error with an IsError result of its own, so
+// the step would say tool_error, a failed result, for a failed call. It also
+// fails if an IsError result with no error is marked as more than tool_error.
+func TestHandlerErrorIsAFailedCallOnItsTransportSpan(t *testing.T) {
+	for _, tc := range transportCases {
+		t.Run(tc.mode+"/"+tc.version, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			c, receiver := newCapture(t)
+			server := sdk.NewServer(&sdk.Implementation{Name: "synthetic-server", Version: "1.0"}, nil)
+			sdk.AddTool(server, &sdk.Tool{Name: "broken"}, agentrailmcp.Tool(c, "registered.broken", func(ctx context.Context, req *sdk.CallToolRequest, in input) (*sdk.CallToolResult, output, error) {
+				return nil, output{}, syntheticToolError{}
+			}))
+			sdk.AddTool(server, &sdk.Tool{Name: "failure"}, agentrailmcp.Tool(c, "registered.failure", func(ctx context.Context, req *sdk.CallToolRequest, in input) (*sdk.CallToolResult, output, error) {
+				return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: "private-tool-error"}}}, output{}, nil
+			}))
+			client := sdk.NewClient(&sdk.Implementation{Name: "synthetic-caller", Version: "2.3"}, nil)
+			session, err := client.Connect(ctx, serve(t, ctx, c, server, tc.mode), &sdk.ClientSessionOptions{ProtocolVersion: tc.version})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			// The SDK answers the handler's error itself, as an IsError result.
+			for _, name := range []string{"broken", "failure"} {
+				if r, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: map[string]any{"secret": "private-argument"}}); err != nil || !r.IsError {
+					t.Fatalf("%s: want an IsError result, got %+v, %v", name, r, err)
+				}
+			}
+			got := spans(t, c, receiver)
+			transports, handlers := byLayer(t, got, "transport"), byLayer(t, got, "handler")
+			const thrown = "mcp_test.syntheticToolError"
+			broken := named1(t, transports, "mcp.tools/call:broken")
+			if broken.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || attr(broken, "error.type") != thrown || !boolValue(broken, key(t, "isError")) || !boolValue(broken, "agentrail.step") {
+				t.Fatalf("handler error lost on its transport span: %v", broken)
+			}
+			if h := named1(t, handlers, "mcp.tools/call:registered.broken"); h.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || attr(h, "error.type") != thrown {
+				t.Fatalf("handler span lost its error: %v", h)
+			}
+			failure := named1(t, transports, "mcp.tools/call:failure")
+			if failure.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || attr(failure, "error.type") != "tool_error" || !boolValue(failure, key(t, "isError")) {
+				t.Fatalf("IsError result not tool_error: %v", failure)
+			}
+		})
+	}
+}
+
 func fmtSpans(got []*tracepb.Span) string {
 	var b strings.Builder
 	for _, s := range got {

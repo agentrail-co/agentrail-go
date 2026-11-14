@@ -183,7 +183,12 @@ its response (as `jsonrpc.EncodeMessage` writes them; no response size for a
 notification), `agentrail.mcp.jsonrpc.error_code` for a JSON-RPC error (omitted when the code
 is outside 32 bits, which the collector refuses) and
 `agentrail.mcp.result.is_error` for a failed tool result. Both set status ERROR,
-with `error.type` `McpJsonRpcError` or `tool_error`. A request the HTTP
+with `error.type` `McpJsonRpcError` or `tool_error`. A tool whose wrapped
+callback returned an error or panicked is a failed call, not a failed result:
+the SDK answers a typed tool's error with an `IsError` result of its own, so
+the transport span keeps `agentrail.mcp.result.is_error` but its `error.type` is
+the callback span's (the error's Go type, or `panic`), unless the answer was a
+JSON-RPC error. A request the HTTP
 layer refuses with status 400 or more and no JSON-RPC answer after reading it
 (in protocols before 2026-07-28, a plain-text 400 for an unknown method) is
 ERROR with `error.type` `McpTransportRejected` and no code. A request whose
@@ -212,7 +217,8 @@ callback's span. Inside a transport span the callback's span is its child,
 SDK gives a callback no JSON-RPC id, so when two pending calls on one legacy
 SSE stream (or in one HTTP batch) name the same tool, prompt or resource, the
 callback's span takes no parent rather than risk another request's; it is
-still no step, and each call still counts once through its transport span. With
+still no step, and each call still counts once through its transport span (a
+callback error then reaches only its own span). With
 no transport wrapper it is the call's step, as before, with `layer` `handler`,
 `agentrail.mcp.method` and, when the request's session has an ID, the keyed
 `agentrail.mcp.session.id_hash`. The original typed output, result, error and panic

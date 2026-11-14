@@ -2,12 +2,14 @@
 
 `sdk-contract.json` is copied byte for byte from Argus
 `apps/api/sdk-contract.json` at commit
-`ddb046d7fb5a884724e0f62fdf4441c64dee452c`
+`78f9621d4673eab0f3e454575b98903352ee02f6`
 (includes MCP transport and handler spans, `otlp.mcpAttributes`,
 `otlp.mcpSpans` (a 32-bit `jsonrpc.error_code`; resource URIs in span names
-without userinfo, query or fragment), payload capture and `otlp.limits.mcpPayloadBytes` /
-`exportBatchBytes`, standard MCP naming attributes and `tool_error`; SHA-256
-`6a0b1e13d364da92831ba495b30a42ae0c1da7119c771e4b4a11a2e93743f498`).
+without userinfo, query or fragment; a tool whose handler threw is a failed
+call, with the thrown type, before `tool_error`), payload capture and
+`otlp.limits.mcpPayloadBytes` / `exportBatchBytes`, standard MCP naming
+attributes and `tool_error`; SHA-256
+`a25284880b58df53e19d2c2854cbe1bc66defb6349f7c9b96009c975ac628a19`).
 
 Do not edit it in this repository. Update the receiver contract in Argus, copy
 its generated snapshot and record the revision here. The SDK uses upstream OTLP

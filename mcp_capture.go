@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/agentrail-co/agentrail-go/internal/handoff"
@@ -133,6 +134,7 @@ type noMCPSpan struct{}
 
 func (noMCPSpan) End(mcpspan.Outcome)                       {}
 func (noMCPSpan) Graft(ctx context.Context) context.Context { return ctx }
+func (noMCPSpan) Threw(string)                              {}
 
 type transportSpan struct {
 	client *Client
@@ -141,6 +143,9 @@ type transportSpan struct {
 	mark   *mcpMark
 	call   mcpspan.Call
 	once   sync.Once
+	// thrown is the error type of a handler under this call that returned an
+	// error or panicked; nil when none did.
+	thrown atomic.Pointer[string]
 }
 
 func (c *Client) mcpTransport(ctx context.Context, call mcpspan.Call) mcpspan.Span {
@@ -165,6 +170,7 @@ func (t *transportSpan) Graft(ctx context.Context) context.Context {
 func (t *transportSpan) End(o mcpspan.Outcome) {
 	t.once.Do(func() { t.end(o) })
 }
+func (t *transportSpan) Threw(errorType string) { t.thrown.Store(&errorType) }
 func (t *transportSpan) end(o mcpspan.Outcome) {
 	c := t.client
 	attrs := mcpMethodAttr(t.call.Method)
@@ -172,23 +178,33 @@ func (t *transportSpan) end(o mcpspan.Outcome) {
 	if t.call.RequestBytes >= 0 {
 		attrs = append(attrs, attribute.Int("agentrail.mcp.request.bytes", t.call.RequestBytes))
 	}
-	failed := o.Rejected
+	errorType := ""
 	if o.Rejected {
-		attrs = append(attrs, attribute.String("error.type", "McpTransportRejected"))
+		errorType = "McpTransportRejected"
 	}
+	answeredError := o.Responded && o.ErrorCode != nil
 	if o.Responded {
 		attrs = append(attrs, attribute.Int("agentrail.mcp.response.bytes", o.ResponseBytes))
-		if o.ErrorCode != nil {
-			failed = true
-			attrs = append(attrs, attribute.String("error.type", "McpJsonRpcError"))
+		if answeredError {
+			errorType = "McpJsonRpcError"
 			// The collector stores the code as int4 and refuses an export with one outside it.
 			if *o.ErrorCode >= math.MinInt32 && *o.ErrorCode <= math.MaxInt32 {
 				attrs = append(attrs, attribute.Int64("agentrail.mcp.jsonrpc.error_code", *o.ErrorCode))
 			}
 		} else if o.IsError {
-			failed = true
-			attrs = append(attrs, attribute.Bool("agentrail.mcp.result.is_error", true), attribute.String("error.type", "tool_error"))
+			errorType = "tool_error"
+			attrs = append(attrs, attribute.Bool("agentrail.mcp.result.is_error", true))
 		}
+	}
+	// A handler that returned an error or panicked is a failed call, though
+	// the MCP SDK answered the error with an IsError result of its own
+	// (result.is_error stays); a JSON-RPC error answer is that error.
+	if thrown := t.thrown.Load(); thrown != nil && !answeredError {
+		errorType = *thrown
+	}
+	failed := errorType != ""
+	if failed {
+		attrs = append(attrs, attribute.String("error.type", errorType))
 	}
 	payload := 0
 	if c.options.MCP.CapturePayloads {
@@ -300,10 +316,18 @@ func (c *Client) mcpHandler(ctx context.Context, parent mcpspan.Span, active boo
 	if span == nil {
 		return run(ctx)
 	}
+	// threw marks a handler that failed rather than answered IsError, and
+	// tells the call it runs inside.
+	threw := func(errorType string) {
+		m.add(0, attribute.String("error.type", errorType))
+		if parent != nil {
+			parent.Threw(errorType)
+		}
+	}
 	defer func() {
 		if p := recover(); p != nil {
 			span.SetStatus(codes.Error, "")
-			m.add(0, attribute.String("error.type", "panic"))
+			threw("panic")
 			span.End()
 			panic(p)
 		}
@@ -312,7 +336,7 @@ func (c *Client) mcpHandler(ctx context.Context, parent mcpspan.Span, active boo
 			if errors.As(err, &mcpspan.OperationError{}) {
 				m.add(0, attribute.Bool("agentrail.mcp.result.is_error", true), attribute.String("error.type", "tool_error"))
 			} else {
-				m.add(0, attribute.String("error.type", bounded(reflect.TypeOf(err).String(), 4096)))
+				threw(bounded(reflect.TypeOf(err).String(), 4096))
 			}
 		}
 		span.End()

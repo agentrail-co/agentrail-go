@@ -11,8 +11,10 @@ production deployment are separate operator steps; the build does not perform th
    `agentrail.operation.*`, `agentrail.workflow.*` and `agentrail.plugin.*`
    attributes (argus #600 and later), also on production. MCP transport and
    handler spans, and payloads, need the Argus Agent tools change (branch
-   `feat/mcp-analytics`, whose contract `testdata/sdk-contract.json` copies) on
-   production before 0.3.0 is tagged; an older collector drops the new attributes. Existing OTLP endpoints must be enabled. No database migration
+   `feat/mcp-analytics`) on production before 0.3.0 is tagged, and so does the
+   collector that ranks a thrown handler above `IsError` (Argus commit
+   `78f9621d4`, branch `fix/release-621-prod-check`, whose contract
+   `testdata/sdk-contract.json` copies); an older collector drops the new attributes. Existing OTLP endpoints must be enabled. No database migration
    or new source enum is needed; backend credentials currently have kind `node`.
 2. Merge the SDK branch into the GitHub repository and run CI. Before tagging,
    run the real receiver gate against the deployed-code revision locally with

@@ -50,6 +50,10 @@ type Span interface {
 	End(Outcome)
 	// Graft returns ctx carrying this span as the parent of new spans.
 	Graft(ctx context.Context) context.Context
+	// Threw records that a handler run inside this call returned an error or
+	// panicked (not an IsError result), with the error type its own span
+	// carries: the call is a failed call, whatever the server answered.
+	Threw(errorType string)
 }
 
 // OperationError marks a tool result whose IsError is true.

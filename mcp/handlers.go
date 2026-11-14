@@ -67,7 +67,9 @@ func spanName(method, name string) string {
 // Tool wraps a typed handler for sdk.AddTool. name must be a stable name chosen
 // at registration, never a value from arguments. The original result, output,
 // error, and panic are preserved. Both errors and IsError results mark failure.
-// Span names are mcp.tools/call:<name>, bounded to 256 UTF-16 units.
+// Inside a transport span, an error or panic is a failed call: the transport
+// span carries its type, though the SDK answers the error with an IsError
+// result. Span names are mcp.tools/call:<name>, bounded to 256 UTF-16 units.
 func Tool[In, Out any](client *agentrail.Client, name string, next sdk.ToolHandlerFor[In, Out]) sdk.ToolHandlerFor[In, Out] {
 	return func(ctx context.Context, req *sdk.CallToolRequest, in In) (result *sdk.CallToolResult, out Out, err error) {
 		observe(ctx, client, req, "tools/call", toolName(req), name, func(ctx context.Context) error {
