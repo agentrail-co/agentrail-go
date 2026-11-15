@@ -215,7 +215,10 @@ func TestHeaderNamesStopAtAWholeName(t *testing.T) {
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
 	sent := map[string]bool{"accept": true, "accept-encoding": true, "content-length": true, "content-type": true, "host": true, "mcp-protocol-version": true, "user-agent": true}
-	for i := range 500 {
+	// Enough names to pass the 4096 characters sent (400 of 13 characters
+	// each), and few enough that the server takes the request: from Go 1.27
+	// net/http answers 431 past 500 header values (DefaultMaxHeaderValueCount).
+	for i := range 400 {
 		name := fmt.Sprintf("x-filler-%03d", i)
 		req.Header.Set(name, "1")
 		sent[name] = true
