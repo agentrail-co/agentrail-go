@@ -165,7 +165,9 @@ func requestFacts(r *http.Request) *mcpspan.Request {
 		scheme = "https"
 	}
 	target := r.RequestURI
-	if target == "" {
+	// An absolute-form target (`POST http://host/mcp`, as a forward proxy
+	// sends one) already names its scheme and host: take its path and query.
+	if target == "" || r.URL.IsAbs() {
 		target = handoff.Target(r.URL)
 	}
 	return &mcpspan.Request{

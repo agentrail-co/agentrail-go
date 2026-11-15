@@ -294,3 +294,41 @@ func TestRequestFactsCarryNoHeaderOrQueryValue(t *testing.T) {
 		t.Fatalf("a header or query value was sent: %s", fmtSpans(got))
 	}
 }
+
+// This fails if a request sent with an absolute-form target, as a forward
+// proxy sends one (`POST http://mcp.example.test/mcp HTTP/1.1`), gets its
+// scheme and host written twice into url.full.
+func TestURLOfAnAbsoluteFormTarget(t *testing.T) {
+	c, receiver := newCapture(t)
+	app := httptest.NewServer(listProjects(c))
+	t.Cleanup(app.Close)
+	conn, err := net.Dial("tcp", app.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	request := "POST http://mcp.example.test/mcp HTTP/1.1\r\n" +
+		"Host: mcp.example.test\r\n" +
+		"Content-Type: application/json\r\n" +
+		"Accept: application/json, text/event-stream\r\n" +
+		"Mcp-Protocol-Version: 2025-06-18\r\n" +
+		"Content-Length: " + strconv.Itoa(len(listProjectsCall)) + "\r\n" +
+		"Connection: close\r\n\r\n" + listProjectsCall
+	if _, err := io.WriteString(conn, request); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if u := attr(listProjectsSpan(t, c, receiver), "url.full"); u != "http://mcp.example.test/mcp" {
+		t.Fatalf("url.full %q", u)
+	}
+}
