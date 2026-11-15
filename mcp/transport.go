@@ -65,7 +65,7 @@ func (c *connection) Read(ctx context.Context) (jsonrpc.Message, error) {
 		if extra, ok := req.Extra.(*sdk.RequestExtra); ok {
 			keys = append(keys, extra)
 		}
-		c.tracker.receive(ctx, req, keys...)
+		c.tracker.receive(ctx, req, nil, keys...)
 	}
 	return msg, nil
 }
@@ -73,7 +73,7 @@ func (c *connection) Read(ctx context.Context) (jsonrpc.Message, error) {
 // Write ends a response's transport span before the client can read it.
 func (c *connection) Write(ctx context.Context, msg jsonrpc.Message) error {
 	c.tracker.setSession(c.SessionID())
-	c.tracker.respond(msg)
+	c.tracker.respond(msg, 0)
 	return c.Connection.Write(ctx, msg)
 }
 

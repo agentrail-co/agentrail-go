@@ -195,6 +195,34 @@ ERROR with `error.type` `McpTransportRejected` and no code. A request whose
 JSON-RPC id repeats one still pending ends the earlier call the same way. The span ends when the response is written, before the
 client can read it.
 
+**Request facts.** A transport span of a message `Handler` received also says
+what the HTTP request that carried it said of itself (the contract's
+`otlp.mcpSpans.requestFacts`): `http.request.method`; `url.full`, its query cut
+to valid `h` markers as on HTTP spans; `http.response.status_code` when the
+answer came on that request's response (a Streamable HTTP answer, or a refusal;
+not a notification, whose span ends as it is read, nor a legacy SSE call,
+answered on the stream); `user_agent.original`;
+`agentrail.http.request.header_names`, the names only and never a value,
+lower-cased and sorted because `http.Header` keeps neither case nor order, cut
+at a whole name within 4,096 characters; `agentrail.http.request.accept` and
+`agentrail.http.request.accept_encoding`, the values as sent (several lines
+joined with `, `), each absent when the request sent none; and
+`agentrail.mcp.jsonrpc.id`, the id as text, a number in decimal (absent on a
+notification, and past the collector's 128 characters). Every message of a
+batch carries its request's facts. The names are those the handler receives,
+so a header a middleware in front of it adds is listed; the collector drops the
+names proxies add. net/http keeps three names out of `Header`, and each is added
+back when the client sent it: `host` on HTTP/1.x (an HTTP/2 request names its
+host in `:authority`, which is no header, and a `host` field it does send stays
+in `Header`), `transfer-encoding` and `trailer`. A `Content-Length` sent beside
+a chunked body, which HTTP forbids, is deleted by net/http and cannot be.
+`Content-Length`, `Connection`, `Expect` and `TE` stay in `Header`. `Transport`
+sends none of these: stdio and in-memory have no HTTP request, and a
+`StreamableServerTransport` the application serves itself shows the wrapper
+only its messages. Nor does a handler span that is its own step: the SDK gives
+a callback the header map without the host, method, URL or JSON-RPC id, and a
+names list without `host` would read as another client.
+
 `Transport` gives each request an empty `*sdk.RequestExtra` when its transport
 supplies none, which is how a callback finds its transport span. Like
 `sdk.LoggingTransport`, it hides the SDK's private connection hooks, so a stdio

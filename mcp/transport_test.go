@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -28,7 +29,12 @@ type sdkContract struct {
 	OTLP struct {
 		SpanAttributes map[string]string `json:"spanAttributes"`
 		MCPAttributes  map[string]string `json:"mcpAttributes"`
-		Limits         struct {
+		// MCPRequestFacts holds two requests as their clients wrote them and
+		// the attributes an SDK sends for each.
+		MCPRequestFacts struct {
+			Requests []recordedRequest `json:"requests"`
+		} `json:"mcpRequestFacts"`
+		Limits struct {
 			BodyBytes        int `json:"bodyBytes"`
 			MCPPayloadBytes  int `json:"mcpPayloadBytes"`
 			ExportBatchBytes int `json:"exportBatchBytes"`
@@ -51,6 +57,15 @@ type sdkContract struct {
 			} `json:"accepted"`
 		} `json:"fixtures"`
 	} `json:"otlp"`
+}
+
+type recordedRequest struct {
+	Name       string            `json:"name"`
+	Method     string            `json:"method"`
+	URL        string            `json:"url"`
+	Headers    [][2]string       `json:"headers"`
+	Body       json.RawMessage   `json:"body"`
+	Attributes map[string]string `json:"attributes"`
 }
 
 var loadContract = sync.OnceValues(func() (*sdkContract, error) {
@@ -92,6 +107,9 @@ func named(t *testing.T) map[string]bool {
 	for _, k := range c.OTLP.MCPAttributes {
 		out[k] = true
 	}
+	for k := range requestFactKeys(t) {
+		out[k] = true
+	}
 	for _, f := range c.OTLP.Fixtures.Accepted {
 		if !strings.Contains(f.Name, "mcp") {
 			continue
@@ -104,6 +122,24 @@ func named(t *testing.T) map[string]bool {
 					}
 				}
 			}
+		}
+	}
+	return out
+}
+
+// requestFactKeys are the attributes an MCP step sends about the HTTP request
+// that carried its message: those of the contract's recorded requests, and
+// the status code otlp.mcpSpans.requestFacts names beside them.
+func requestFactKeys(t *testing.T) map[string]bool {
+	t.Helper()
+	requests := contract(t).OTLP.MCPRequestFacts.Requests
+	if len(requests) == 0 {
+		t.Fatal("contract records no MCP request")
+	}
+	out := map[string]bool{"http.response.status_code": true}
+	for _, r := range requests {
+		for k := range r.Attributes {
+			out[k] = true
 		}
 	}
 	return out
@@ -190,7 +226,9 @@ func named1(t *testing.T, got []*tracepb.Span, name string) *tracepb.Span {
 // This fails if a transport span is lost or doubled, a handler becomes a
 // second step for one tool call, a JSON-RPC error code or IsError result is
 // lost, the session hash is dropped under stateful Streamable HTTP, a payload
-// is sent with capture off, or any attribute the contract does not name is sent.
+// is sent with capture off, any attribute the contract does not name is sent,
+// a message in memory carries HTTP request facts, a message by HTTP loses
+// them, or the JSON-RPC id or HTTP status lands on a message that has none.
 func TestTransportSpansOverTransports(t *testing.T) {
 	for _, tc := range transportCases {
 		t.Run(tc.mode+"/"+tc.version, func(t *testing.T) {
@@ -287,6 +325,28 @@ func TestTransportSpansOverTransports(t *testing.T) {
 					if !allowed[a.Key] {
 						t.Fatalf("attribute %q is not named by the contract", a.Key)
 					}
+				}
+				notification := strings.HasPrefix(method, "notifications/")
+				if tc.mode == "memory" {
+					for k := range requestFactKeys(t) {
+						// The tool's name is a standard name over any transport.
+						if k != key(t, "toolName") && has(s, k) {
+							t.Fatalf("request fact %q in memory: %v", k, s)
+						}
+					}
+					continue
+				}
+				if attr(s, "http.request.method") != http.MethodPost || !strings.HasPrefix(attr(s, "url.full"), "http://127.0.0.1:") || !slices.Contains(strings.Split(attr(s, key(t, "headerNames")), ","), "host") {
+					t.Fatalf("request facts lost: %v", s)
+				}
+				if has(s, key(t, "jsonrpcId")) == notification {
+					t.Fatalf("JSON-RPC id on the wrong message: %v", s)
+				}
+				// A legacy SSE call is answered on the stream, not on its POST;
+				// from 2026-07-28 a JSON-RPC error is answered with status 400.
+				status, answered := intValue(s, "http.response.status_code")
+				if answered != (tc.mode != "sse" && !notification) || answered && status != http.StatusOK && !has(s, key(t, "errorCode")) {
+					t.Fatalf("status %d on the wrong message: %v", status, s)
 				}
 			}
 			for _, s := range handlers {

@@ -8,9 +8,12 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"sync"
 
 	agentrail "github.com/agentrail-co/agentrail-go"
+	"github.com/agentrail-co/agentrail-go/internal/handoff"
 	"github.com/agentrail-co/agentrail-go/internal/mcpspan"
 	"github.com/felixge/httpsnoop"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -134,18 +137,58 @@ func decode(data []byte) []jsonrpc.Message {
 	return nil
 }
 
+// requestFacts reads what an HTTP request says of itself, before the SDK sees
+// it. net/http moves some names out of Header: Host into Request.Host for
+// HTTP/1.x (an HTTP/2 request's :authority is no header, and a host field it
+// sends stays in Header), Transfer-Encoding and Trailer into
+// Request.TransferEncoding and Request.Trailer. Each is added back when the
+// client sent it. A Content-Length sent beside a chunked Transfer-Encoding,
+// which HTTP forbids, is deleted without a trace and cannot be.
+func requestFacts(r *http.Request) *mcpspan.Request {
+	names := make([]string, 0, len(r.Header)+3)
+	for name := range r.Header {
+		names = append(names, strings.ToLower(name))
+	}
+	// net/http refuses an HTTP/1.1 request without a Host header.
+	if r.ProtoMajor == 1 && r.Host != "" {
+		names = append(names, "host")
+	}
+	if len(r.TransferEncoding) > 0 {
+		names = append(names, "transfer-encoding")
+	}
+	if len(r.Trailer) > 0 {
+		names = append(names, "trailer")
+	}
+	slices.Sort(names)
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	target := r.RequestURI
+	// An absolute-form target (`POST http://host/mcp`, as a forward proxy
+	// sends one) already names its scheme and host: take its path and query.
+	if target == "" || r.URL.IsAbs() {
+		target = handoff.Target(r.URL)
+	}
+	return &mcpspan.Request{
+		Method: r.Method, URL: scheme + "://" + r.Host + target, UserAgent: r.UserAgent(),
+		HeaderNames: slices.Compact(names), Accept: slices.Clone(r.Header.Values("Accept")), AcceptEncoding: slices.Clone(r.Header.Values("Accept-Encoding")),
+	}
+}
+
 func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 	if r.Body == nil || r.Body == http.NoBody {
 		h.next.ServeHTTP(w, r)
 		return
 	}
 	r = r.WithContext(r.Context())
+	facts := requestFacts(r)
 	if id := r.URL.Query().Get("sessionid"); id != "" {
 		h.mu.Lock()
 		t := h.sse[id]
 		h.mu.Unlock()
 		if t != nil {
-			h.ssePost(w, r, t)
+			h.ssePost(w, r, t, facts)
 			return
 		}
 	}
@@ -175,7 +218,7 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 				initialize = true
 				mu.Unlock()
 			}
-			t.receive(received, m, key)
+			t.receive(received, m, facts, key)
 		}
 	}}
 	// A stateful session's handlers run in its initialize request's context,
@@ -186,14 +229,15 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 	// Deferred so a panicking handler leaves nothing registered.
 	defer func() {
 		mu.Lock()
-		rejected := status >= 400
+		code := status
 		mu.Unlock()
-		t.abandon(rejected)
+		t.abandon(code >= 400, code)
 	}()
 	var body bytes.Buffer
+	// Answers are read under mu, after header has set status.
 	sse := &sseParser{onEvent: func(_ string, data []byte) {
 		for _, m := range decode(data) {
-			t.respond(m)
+			t.respond(m, status)
 		}
 	}}
 	streaming := false
@@ -228,7 +272,7 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 		body.Write(b)
 		if json.Valid(body.Bytes()) { // a whole JSON answer, usually one write
 			for _, m := range decode(body.Bytes()) {
-				t.respond(m)
+				t.respond(m, status)
 			}
 			body.Reset()
 		}
@@ -241,7 +285,7 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 	}
 	if !streaming {
 		for _, m := range decode(body.Bytes()) {
-			t.respond(m)
+			t.respond(m, status)
 		}
 	}
 	if initialize && status < 300 {
@@ -252,13 +296,13 @@ func (h *httpCapture) post(w http.ResponseWriter, r *http.Request) {
 }
 
 // ssePost records a legacy SSE message; its answer arrives on the stream.
-func (h *httpCapture) ssePost(w http.ResponseWriter, r *http.Request, t *tracker) {
+func (h *httpCapture) ssePost(w http.ResponseWriter, r *http.Request, t *tracker, facts *mcpspan.Request) {
 	var mu sync.Mutex
 	added := []*call{}
 	received := r.Context()
 	r.Body = &teeBody{ReadCloser: r.Body, done: func(data []byte) {
 		for _, m := range decode(data) {
-			if c := t.receive(received, m, t); c != nil {
+			if c := t.receive(received, m, facts, t); c != nil {
 				mu.Lock()
 				added = append(added, c)
 				mu.Unlock()
@@ -272,10 +316,10 @@ func (h *httpCapture) ssePost(w http.ResponseWriter, r *http.Request, t *tracker
 	// abandon with none given would end them all.
 	defer func() {
 		mu.Lock()
-		ended, rejected := added, status >= 400
+		ended, code := added, status
 		mu.Unlock()
-		if len(ended) > 0 && (rejected || !returned) {
-			t.abandon(rejected, ended...)
+		if len(ended) > 0 && (code >= 400 || !returned) {
+			t.abandon(code >= 400, code, ended...)
 		}
 	}()
 	h.next.ServeHTTP(capture(w, func(code int) {
@@ -306,8 +350,9 @@ func (h *httpCapture) stream(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		// An answer on the stream: the POST that carried its call answered 202.
 		for _, m := range decode(data) {
-			t.respond(m)
+			t.respond(m, 0)
 		}
 	}
 	defer func() {

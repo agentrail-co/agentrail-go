@@ -20,6 +20,25 @@ type Call struct {
 	RequestBytes int
 	// Params is the request's params JSON, used only for opt-in payloads.
 	Params json.RawMessage
+	// ID is the JSON-RPC id as text, a number in decimal; empty for a
+	// notification.
+	ID string
+	// HTTP is the request that carried the message, shared by every message
+	// of a batch; nil when it came by any other transport.
+	HTTP *Request
+}
+
+// Request is what an HTTP request that carried MCP messages said of itself.
+type Request struct {
+	// Method is the request's method; URL is the request URL as received,
+	// before its query is cut to the marker lane.
+	Method, URL, UserAgent string
+	// HeaderNames are the names of the request's headers, lower-cased and
+	// sorted: net/http keeps neither their case nor their order.
+	HeaderNames []string
+	// Accept and AcceptEncoding are the headers' values as sent, one per
+	// line; nil when the request sent none.
+	Accept, AcceptEncoding []string
 }
 
 // Meta is what the client said about itself, and the session it is in.
@@ -43,6 +62,10 @@ type Outcome struct {
 	Result json.RawMessage
 	// Rejected is a request the transport refused without a JSON-RPC answer.
 	Rejected bool
+	// Status is the HTTP status of the response that answered or refused the
+	// call, when that is the response to the request that carried it; 0
+	// otherwise.
+	Status int
 }
 
 // Span is a transport span that is open until its call is answered.

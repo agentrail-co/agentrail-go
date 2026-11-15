@@ -69,6 +69,13 @@ mux.Handle("/mcp", capturemcp.Handler(capture, mcpHandler))
 sdk.AddTool(server, tool, capturemcp.Tool(capture, "confirm_order", confirmOrder))
 ```
 
+Under `capturemcp.Handler`, each MCP span also says how the HTTP request that
+carried its message was made, which is how Agentrail tells one agent product from
+another: the method, the URL (its query cut to Agentrail's marker), the status,
+the user agent, the header names (never a value; lower-cased and sorted, as Go
+keeps neither their case nor their order), Accept, Accept-Encoding and the
+JSON-RPC id. A message over stdio carries none of these.
+
 `New` never reads environment variables, so check yours are set before calling it.
 Only the exact origins in `OutboundOrigins` receive Agentrail's trace context.
 Complete programs: [HTTP server](https://github.com/agentrail-co/agentrail-go/blob/main/examples/http/main.go),

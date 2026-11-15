@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strconv"
 	"sync"
 
 	agentrail "github.com/agentrail-co/agentrail-go"
@@ -144,9 +145,10 @@ type paramsView struct {
 	} `json:"_meta"`
 }
 
-// receive starts the transport span of a request or notification. A request
+// receive starts the transport span of a request or notification, which came
+// in the HTTP request facts describe (nil for any other transport). A request
 // waits for respond; keys let its handler find it. It returns the call.
-func (t *tracker) receive(ctx context.Context, msg jsonrpc.Message, keys ...any) *call {
+func (t *tracker) receive(ctx context.Context, msg jsonrpc.Message, facts *mcpspan.Request, keys ...any) *call {
 	req, ok := msg.(*jsonrpc.Request)
 	if !ok {
 		return nil // a client's answer to a server request is not a step
@@ -183,7 +185,7 @@ func (t *tracker) receive(ctx context.Context, msg jsonrpc.Message, keys ...any)
 	if p.Meta.ClientInfo != nil {
 		meta.Client, meta.ClientVersion = p.Meta.ClientInfo.Name, p.Meta.ClientInfo.Version
 	}
-	span := mcpspan.Transport(t.client, ctx, mcpspan.Call{Method: req.Method, Target: target, RequestBytes: size, Params: req.Params})
+	span := mcpspan.Transport(t.client, ctx, mcpspan.Call{Method: req.Method, Target: target, RequestBytes: size, Params: req.Params, ID: idText(req.ID), HTTP: facts})
 	c := &call{span: span, method: req.Method, target: target, meta: meta, keys: keys}
 	if !req.IsCall() {
 		span.End(mcpspan.Outcome{Meta: t.sessionMeta(meta)})
@@ -211,6 +213,17 @@ func (t *tracker) receive(ctx context.Context, msg jsonrpc.Message, keys ...any)
 	return c
 }
 
+// idText is a JSON-RPC id as text; the SDK decodes a number as an int64.
+func idText(id jsonrpc.ID) string {
+	switch v := id.Raw().(type) {
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case string:
+		return v
+	}
+	return ""
+}
+
 func (t *tracker) sessionMeta(m mcpspan.Meta) mcpspan.Meta {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -233,8 +246,10 @@ type responseView struct {
 	Error  json.RawMessage `json:"error"`
 }
 
-// respond ends the transport span of the request a response answers.
-func (t *tracker) respond(msg jsonrpc.Message) {
+// respond ends the transport span of the request a response answers. status
+// is that of the HTTP response it came on, when that answers the request that
+// carried the call; 0 otherwise.
+func (t *tracker) respond(msg jsonrpc.Message, status int) {
 	resp, ok := msg.(*jsonrpc.Response)
 	if !ok {
 		return
@@ -247,7 +262,7 @@ func (t *tracker) respond(msg jsonrpc.Message) {
 		return
 	}
 	unregister(c)
-	o := mcpspan.Outcome{Meta: t.sessionMeta(c.meta), Responded: true}
+	o := mcpspan.Outcome{Meta: t.sessionMeta(c.meta), Responded: true, Status: status}
 	// Everything is read from the bytes the SDK writes, so the error code is
 	// the one the client receives, whatever Go error produced it.
 	if data, err := jsonrpc.EncodeMessage(resp); err == nil {
@@ -281,12 +296,13 @@ func (t *tracker) close() {
 	t.mu.Lock()
 	t.closed = true
 	t.mu.Unlock()
-	t.abandon(false)
+	t.abandon(false, 0)
 }
 
 // abandon ends calls that will get no response here: those given, or every
-// pending call when none are. rejected marks a request the transport refused.
-func (t *tracker) abandon(rejected bool, only ...*call) {
+// pending call when none are. rejected marks a request the transport refused;
+// status is the HTTP status of the request that carried them, or 0.
+func (t *tracker) abandon(rejected bool, status int, only ...*call) {
 	t.mu.Lock()
 	var ended []*call
 	for id, c := range t.pending {
@@ -298,7 +314,7 @@ func (t *tracker) abandon(rejected bool, only ...*call) {
 	t.mu.Unlock()
 	for _, c := range ended {
 		unregister(c)
-		c.span.End(mcpspan.Outcome{Meta: t.sessionMeta(c.meta), Rejected: rejected})
+		c.span.End(mcpspan.Outcome{Meta: t.sessionMeta(c.meta), Rejected: rejected, Status: status})
 	}
 }
 func contains(list []*call, c *call) bool {
