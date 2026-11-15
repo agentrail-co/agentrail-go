@@ -5,8 +5,12 @@
 // transport passed to Server.Connect) record one transport span per JSON-RPC
 // message the server receives: its method, the tool, prompt or resource it
 // names, client metadata, a keyed hash of the session ID, message sizes, and
-// JSON-RPC errors and IsError results. Arguments, results and resource content
-// are sent only when Options.MCP.CapturePayloads is set, after its redact hook.
+// JSON-RPC errors and IsError results. Under Handler it also carries what the
+// HTTP request that carried the message said of itself: method, URL (its
+// query cut to the marker lane), status, user agent, header names (never a
+// value), Accept, Accept-Encoding and the JSON-RPC id. Arguments, results and
+// resource content are sent only when Options.MCP.CapturePayloads is set,
+// after its redact hook.
 //
 // Tool, ToolHandler, Resource and Prompt wrap registered callbacks. Inside a
 // transport span the callback's span is its child and no step of its own;

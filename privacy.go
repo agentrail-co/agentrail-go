@@ -77,6 +77,48 @@ func sanitizedURL(raw string) string {
 	}
 	return s
 }
+
+// requestFactAttrs are what an MCP step says of the HTTP request that carried
+// its message (otlp.mcpSpans.requestFacts): never a header value but Accept's
+// and Accept-Encoding's, the URL's query cut to the marker lane, and the
+// names list cut at a whole name. status is 0 when no HTTP response answered.
+func requestFactAttrs(r *mcpspan.Request, id string, status int) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{attribute.String("http.request.method", bounded(r.Method, 4096))}
+	if u := sanitizedURL(r.URL); u != "" {
+		attrs = append(attrs, attribute.String("url.full", u))
+	}
+	if status != 0 {
+		attrs = append(attrs, attribute.Int("http.response.status_code", status))
+	}
+	if r.UserAgent != "" {
+		attrs = append(attrs, attribute.String("user_agent.original", bounded(r.UserAgent, 4096)))
+	}
+	// Whole names, within 4096 characters with their commas.
+	var names strings.Builder
+	for _, name := range r.HeaderNames {
+		if names.Len()+len(name) >= 4096 {
+			break
+		}
+		if names.Len() > 0 {
+			names.WriteByte(',')
+		}
+		names.WriteString(name)
+	}
+	if names.Len() > 0 {
+		attrs = append(attrs, attribute.String(keyHeaderNames, names.String()))
+	}
+	if r.Accept != nil {
+		attrs = append(attrs, attribute.String(keyAccept, bounded(strings.Join(r.Accept, ", "), 4096)))
+	}
+	if r.AcceptEncoding != nil {
+		attrs = append(attrs, attribute.String(keyAcceptEncoding, bounded(strings.Join(r.AcceptEncoding, ", "), 4096)))
+	}
+	// The collector takes no id past 128 characters.
+	if id != "" && validText(id, 128) {
+		attrs = append(attrs, attribute.String(keyJSONRPCID, id))
+	}
+	return attrs
+}
 func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnlySpan {
 	original := make(map[string]attribute.Value)
 	for _, a := range s.Attributes() {

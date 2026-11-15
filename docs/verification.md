@@ -134,3 +134,25 @@ handoff fuzz target for 10 seconds, `scripts/check-consumer.sh` and
 callback no longer telling its transport span (all five transport modes),
 and an `IsError` result marked as a thrown error. A panic is not exercised by
 a test: the MCP SDK does not recover one, so it ends the test process.
+
+Request facts on MCP spans (contract SHA-256 `20adfff8…`, toolchain
+go1.26.11): transport spans of messages `Handler` receives carry the
+contract's `otlp.mcpSpans.requestFacts`. A probe against real `net/http`
+servers (HTTP/1.1, and HTTP/2 framed by hand) found that net/http moves
+`Host` (HTTP/1.x only), `Transfer-Encoding` and `Trailer` out of `Header`, and
+deletes a `Content-Length` sent beside a chunked body; `Content-Length`,
+`Connection`, `Expect` and `TE` stay, and a `host` field an HTTP/2 request
+sends stays in `Header`. Tests hold the three add-backs, and replay the two
+`otlp.mcpRequestFacts` requests (Claude Code 2.1.318, Codex 0.166.0) as their
+clients wrote them over TLS, comparing the names as a set. `gofmt`,
+`go mod tidy -diff`, `go build`, `go vet`, `go test -race -count=1 ./...` (MCP
+tests also 10 times under race), the handoff fuzz target for 10 seconds,
+`GOTOOLCHAIN=go1.26.0 go test ./...`, `scripts/check-consumer.sh` and
+`govulncheck` v1.9.0 (no vulnerabilities) passed. Mutations caught: `host` not
+added back, header values listed beside names, `host` added on HTTP/2,
+`transfer-encoding` or `trailer` not added back, names left in Go's canonical
+case, Accept-Encoding sent where Codex sent none, `url.full` not cut to the
+marker lane, the JSON-RPC id sent in memory, no HTTP status, a status on a
+legacy SSE answer, and the names list cut inside a name or not bounded. The
+real receiver gate was not run: it sends no MCP traffic, and the Argus change
+is not merged.

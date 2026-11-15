@@ -2,7 +2,8 @@
 
 The module is prepared as version 0.3.0: MCP transport capture (`mcp.Handler`,
 `mcp.Transport`), handler spans as children of transport spans, opt-in payload
-capture (`Options.MCP`) and byte-sized span batches. v0.2.0 (2026-11-12) was
+capture (`Options.MCP`), byte-sized span batches and the HTTP request facts on
+MCP transport spans. v0.2.0 (2026-11-12) was
 the first tag; v0.2.1 changed only the README. Tagging, pushing and
 production deployment are separate operator steps; the build does not perform them.
 
@@ -13,8 +14,12 @@ production deployment are separate operator steps; the build does not perform th
    handler spans, and payloads, need the Argus Agent tools change (branch
    `feat/mcp-analytics`) on production before 0.3.0 is tagged, and so does the
    collector that ranks a thrown handler above `IsError` (Argus commit
-   `78f9621d4`, branch `fix/release-621-prod-check`, whose contract
-   `testdata/sdk-contract.json` copies); an older collector drops the new attributes. Existing OTLP endpoints must be enabled. No database migration
+   `78f9621d4`, branch `fix/release-621-prod-check`); an older collector drops
+   the new attributes. `testdata/sdk-contract.json` copies Argus commit
+   `9625ffe6e` (branch `feat/journey-sdk-request-facts`), whose collector reads
+   the MCP request facts. A collector without it ignores those attributes and
+   keeps the rest of the span, so it need not deploy first, but no journey reads
+   header facts from a Go MCP span until it is on production. Existing OTLP endpoints must be enabled. No database migration
    or new source enum is needed; backend credentials currently have kind `node`.
 2. Merge the SDK branch into the GitHub repository and run CI. Before tagging,
    run the real receiver gate against the deployed-code revision locally with

@@ -37,6 +37,10 @@ const (
 	keyMCPResponsePayload  = "agentrail.mcp.response.payload"
 	keyMCPRequestTruncated = "agentrail.mcp.request.truncated"
 	keyMCPResponseTrunc    = "agentrail.mcp.response.truncated"
+	keyHeaderNames         = "agentrail.http.request.header_names"
+	keyAccept              = "agentrail.http.request.accept"
+	keyAcceptEncoding      = "agentrail.http.request.accept_encoding"
+	keyJSONRPCID           = "agentrail.mcp.jsonrpc.id"
 )
 
 // The collector's pattern for agentrail.mcp.method; a method it would refuse is left off.
@@ -177,6 +181,10 @@ func (t *transportSpan) end(o mcpspan.Outcome) {
 	attrs = append(attrs, c.mcpMetaAttrs(o.Meta)...)
 	if t.call.RequestBytes >= 0 {
 		attrs = append(attrs, attribute.Int("agentrail.mcp.request.bytes", t.call.RequestBytes))
+	}
+	// A message that came by any other transport, stdio among them, has none.
+	if t.call.HTTP != nil {
+		attrs = append(attrs, requestFactAttrs(t.call.HTTP, t.call.ID, o.Status)...)
 	}
 	errorType := ""
 	if o.Rejected {
