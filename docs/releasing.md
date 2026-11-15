@@ -16,8 +16,8 @@ production deployment are separate operator steps; the build does not perform th
    collector that ranks a thrown handler above `IsError` (Argus commit
    `78f9621d4`, branch `fix/release-621-prod-check`); an older collector drops
    the new attributes. `testdata/sdk-contract.json` copies Argus commit
-   `9625ffe6e` (branch `feat/journey-sdk-request-facts`), whose collector reads
-   the MCP request facts. A collector without it ignores those attributes and
+   `7ec113b24` (agentrail-co/argus#659, in the stack from #653 to #661), whose
+   collector reads the MCP request facts. A collector without it ignores those attributes and
    keeps the rest of the span, so it need not deploy first, but no journey reads
    header facts from a Go MCP span until it is on production. Existing OTLP endpoints must be enabled. No database migration
    or new source enum is needed; backend credentials currently have kind `node`.
