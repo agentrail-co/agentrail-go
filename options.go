@@ -17,7 +17,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 type CollectorOptions struct {
 	Endpoint string
