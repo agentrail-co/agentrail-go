@@ -10,7 +10,7 @@ the first tag; v0.2.1 changed only the README. Tagging, pushing and
 production deployment are separate operator steps; the build does not perform them.
 
 1. 0.4.0 needs the Argus CLI journeys change (branch `feat/cli-journeys`, commit
-   `a5092a616`, which `testdata/sdk-contract.json` copies) on production before
+   `92f514c7f`, which `testdata/sdk-contract.json` copies) on production before
    it is tagged: an older collector drops the `agentrail.cli.*` attributes and
    keeps the rest of the span, so nothing breaks, but no CLI run joins a journey
    until it is live. The companion Argus recognition of `agentrail-go` (argus #547) is on
