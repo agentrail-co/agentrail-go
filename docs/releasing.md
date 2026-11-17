@@ -1,13 +1,19 @@
 # Releasing agentrail-go
 
-The module is prepared as version 0.3.0: MCP transport capture (`mcp.Handler`,
-`mcp.Transport`), handler spans as children of transport spans, opt-in payload
-capture (`Options.MCP`), byte-sized span batches and the HTTP request facts on
-MCP transport spans. v0.2.0 (2026-11-12) was
+The module is prepared as version 0.4.0: the middleware reads a customer CLI's
+`x-agentrail-cli` header (written by `agentrail-cli-sdk`) into `agentrail.cli.*`
+span attributes, the session only as its keyed hash. 0.3.0 added MCP transport
+capture (`mcp.Handler`, `mcp.Transport`), handler spans as children of transport
+spans, opt-in payload capture (`Options.MCP`), byte-sized span batches and the
+HTTP request facts on MCP transport spans. v0.2.0 (2026-11-12) was
 the first tag; v0.2.1 changed only the README. Tagging, pushing and
 production deployment are separate operator steps; the build does not perform them.
 
-1. The companion Argus recognition of `agentrail-go` (argus #547) is on
+1. 0.4.0 needs the Argus CLI journeys change (branch `feat/cli-journeys`, commit
+   `2f8eb71d8`, which `testdata/sdk-contract.json` copies) on production before
+   it is tagged: an older collector drops the `agentrail.cli.*` attributes and
+   keeps the rest of the span, so nothing breaks, but no CLI run joins a journey
+   until it is live. The companion Argus recognition of `agentrail-go` (argus #547) is on
    production. Workflow and plugin evidence needs a collector that accepts the
    `agentrail.operation.*`, `agentrail.workflow.*` and `agentrail.plugin.*`
    attributes (argus #600 and later), also on production. MCP transport and
@@ -24,12 +30,12 @@ production deployment are separate operator steps; the build does not perform th
 2. Merge the SDK branch into the GitHub repository and run CI. Before tagging,
    run the real receiver gate against the deployed-code revision locally with
    disposable PostgreSQL. Confirm the compatibility matrix against the client.
-3. Confirm `Version` in `options.go` is `0.3.0`, then create and push annotated tag
-   `v0.3.0`. The release workflow verifies formatting/build/vet/race tests,
+3. Confirm `Version` in `options.go` is `0.4.0`, then create and push annotated tag
+   `v0.4.0`. The release workflow verifies formatting/build/vet/race tests,
    vulnerability checks and a separate consumer module before creating the
    GitHub release. Enable GitHub Actions with workflow permission to write releases.
 4. Go modules are distributed from version-control tags: there is no npm publish
-   or package registry token. Verify `go list -m github.com/agentrail-co/agentrail-go@v0.3.0`
+   or package registry token. Verify `go list -m github.com/agentrail-co/agentrail-go@v0.4.0`
    and `go get` from a fresh project after the public tag exists. The local
    consumer gate verifies an unpublished module through a temporary file proxy;
    it does not prove public proxy availability or a published tag.

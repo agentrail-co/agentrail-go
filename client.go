@@ -28,6 +28,9 @@ type requestState struct {
 	location []attribute.KeyValue
 	verified bool
 	links    []trace.Link
+	// What a CLI's x-agentrail-cli header said of the request (cli.go); set
+	// before the handler runs and never changed after.
+	cli []attribute.KeyValue
 }
 
 func (s *requestState) principal() []attribute.KeyValue {

@@ -174,6 +174,9 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 	}
 	if s.SpanKind() == trace.SpanKindServer {
 		attrs = append(attrs, attribute.Bool("agentrail.ingress.verified", m.state.verified))
+		// Only the request's own entry span: a CLI's header says nothing of
+		// the calls this server makes while answering it.
+		attrs = append(attrs, m.state.cli...)
 	}
 	name := "backend.operation"
 	if v := original["http.request.method"]; v.Type() == attribute.STRING {

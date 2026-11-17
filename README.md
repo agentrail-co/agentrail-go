@@ -76,6 +76,11 @@ the user agent, the header names (never a value; lower-cased and sorted, as Go
 keeps neither their case nor their order), Accept, Accept-Encoding and the
 JSON-RPC id. A message over stdio carries none of these.
 
+When a customer's CLI uses [`agentrail-cli-sdk`](https://www.npmjs.com/package/agentrail-cli-sdk),
+its requests say which command an agent ran, in which run and session. The
+middleware records that on the request's span, the session only as a keyed hash,
+so the agent's CLI runs join its journey. There is nothing to configure.
+
 `New` never reads environment variables, so check yours are set before calling it.
 Only the exact origins in `OutboundOrigins` receive Agentrail's trace context.
 Complete programs: [HTTP server](https://github.com/agentrail-co/agentrail-go/blob/main/examples/http/main.go),

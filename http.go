@@ -78,6 +78,9 @@ func (c *Client) Middleware(next http.Handler) http.Handler {
 		sc, err := handoff.Verify(c.options.HashKey, token, parent, r.Method, target, time.Now().UnixMilli())
 		state := &requestState{verified: err == nil}
 		state.location = c.captureLocation(r)
+		if header, ok := readCLIHeader(r.Header.Values(cliHeaderName)); ok {
+			state.cli = cliAttributes(c.options.HashKey, header)
+		}
 		ctx := trace.ContextWithSpanContext(r.Context(), trace.SpanContext{})
 		if err == nil {
 			ctx = trace.ContextWithRemoteSpanContext(ctx, sc)
