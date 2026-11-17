@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	agentrail "github.com/agentrail-co/agentrail-go"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
@@ -165,5 +167,84 @@ func TestMiddlewareRecordsWhatACLIHeaderSays(t *testing.T) {
 		if strings.Contains(fmt.Sprint(export), vectors.KeyedSession.Session) {
 			t.Fatal("export carried the CLI's session unhashed")
 		}
+	}
+}
+
+// This fails if someone copies a CLI's facts onto every server span of the
+// request, or lets the server send the header on: a library's own server span
+// inside the request would be a second CLI step, and the next service would
+// learn the CLI's run and session though the CLI never listed it.
+func TestCLIHeaderStaysOnTheRequestsOwnSpan(t *testing.T) {
+	raw, err := os.ReadFile("testdata/sdk-contract.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract cliContract
+	if err := json.Unmarshal(raw, &contract); err != nil {
+		t.Fatal(err)
+	}
+	r, s := collector(t)
+	capture, err := agentrail.NewProcessors(context.Background(), options(s.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(capture.Sampler(sdktrace.AlwaysSample())), sdktrace.WithSpanProcessor(capture.SpanProcessor))
+	defer tp.Shutdown(context.Background())
+	c, err := capture.Bind(tp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Shutdown(context.Background())
+	var received []string
+	downstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, q *http.Request) {
+		received = append(received, q.Header.Get("x-agentrail-cli"))
+	}))
+	defer downstream.Close()
+	outbound := &http.Client{Transport: c.Transport(nil)}
+	h := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+		// A library's own server span inside the request, as an RPC layer opens one.
+		ctx, inner := tp.Tracer("a-library").Start(q.Context(), "inner", trace.WithSpanKind(trace.SpanKindServer))
+		defer inner.End()
+		forward, err := http.NewRequestWithContext(ctx, http.MethodGet, downstream.URL+"/forwarded", nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		forward.Header.Set("x-agentrail-cli", q.Header.Get("x-agentrail-cli"))
+		resp, err := outbound.Do(forward)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		resp.Body.Close()
+	}))
+	q := httptest.NewRequest(http.MethodPost, "http://app.test/cli", nil)
+	q.Header.Set("x-agentrail-cli", contract.CLIHeader.Vectors.Header.Value)
+	h.ServeHTTP(httptest.NewRecorder(), q)
+	if err := c.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(received) != 1 || received[0] != "" {
+		t.Fatalf("downstream received %q", received)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var withCLI []string
+	for _, export := range r.traces {
+		for _, rs := range export.ResourceSpans {
+			for _, ss := range rs.ScopeSpans {
+				for _, span := range ss.Spans {
+					for _, kv := range span.Attributes {
+						if strings.HasPrefix(kv.Key, "agentrail.cli.") {
+							withCLI = append(withCLI, span.Name)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	if !reflect.DeepEqual(withCLI, []string{"HTTP POST"}) {
+		t.Fatalf("CLI facts on %v", withCLI)
 	}
 }

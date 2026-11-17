@@ -2,7 +2,7 @@
 
 `sdk-contract.json` is copied byte for byte from Argus
 `apps/api/sdk-contract.json` at commit
-`2f8eb71d8`, branch `feat/cli-journeys` (agentrail-co/argus, the CLI journeys
+`a5092a616`, branch `feat/cli-journeys` (agentrail-co/argus, the CLI journeys
 change). It includes MCP transport and handler spans, `otlp.mcpAttributes`,
 `otlp.mcpSpans`, payload capture and the `otlp.limits`, the HTTP request facts
 of `otlp.mcpSpans.requestFacts` with `otlp.mcpRequestFacts`,
@@ -10,7 +10,7 @@ of `otlp.mcpSpans.requestFacts` with `otlp.mcpRequestFacts`,
 customer's CLI sends, how it is read, and its vectors), with
 `otlp.cliAttributes` and `otlp.cliSpans`, which this SDK's middleware sends,
 and the event's `cli` (SHA-256
-`432f62c7174d298bc3ad176a909322b7d7726d316e58af6d5f0cf88339f9af70`).
+`9d46a125cd143df327f02830db604a96a89874ee3b0eb763445262cfa662a25a`).
 
 Do not edit it in this repository. Update the receiver contract in Argus, copy
 its generated snapshot and record the revision here. The SDK uses upstream OTLP

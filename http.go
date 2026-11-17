@@ -17,7 +17,10 @@ import (
 
 const handoffHeader = "x-agentrail-trace-handoff"
 
-var ownedHeaders = []string{"traceparent", "tracestate", "baggage", "sentry-trace", handoffHeader}
+// ownedHeaders never leave in a managed request as the server received them:
+// the trace headers, and a CLI's x-agentrail-cli, which names the CLI's run
+// and session to this server alone.
+var ownedHeaders = []string{"traceparent", "tracestate", "baggage", "sentry-trace", handoffHeader, cliHeaderName}
 
 func singleHeader(h http.Header, key string) string {
 	count := 0
@@ -98,6 +101,8 @@ func (c *Client) Middleware(next http.Handler) http.Handler {
 			attrs = append(attrs, attribute.String("user_agent.original", ua))
 		}
 		ctx, span := c.tp.Tracer("agentrail-go").Start(ctx, "HTTP "+r.Method, trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(attrs...))
+		// Set before the handler runs, and never changed after.
+		state.entry = span.SpanContext().SpanID()
 		if !span.IsRecording() {
 			c.report(ctx, "entry_not_recording", "traces", 1)
 		}
