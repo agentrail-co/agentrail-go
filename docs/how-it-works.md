@@ -7,17 +7,18 @@ guarantees, and what it deliberately does not do. Read the README first.
 
 `New` owns local tracer and logger providers; it registers no globals and performs
 no process-wide HTTP patching. Install the middleware once and use the wrapped
-HTTP client for participating outbound calls. Child OTel instrumentation must use
-the same provider; use the existing-provider mode below when composing libraries.
-`Transport` accepts a concrete `*http.Transport`, or nil for a shared standard network
-transport. This keeps propagation next to the network rather than allowing a
-nested tracing transport to re-add forbidden headers. Install other client
-middleware outside it.
+HTTP client for participating outbound calls. Agentrail records only the spans it
+starts itself: spans other code starts inside a request belong to the
+application's tracer and are not copied. `Transport` accepts a concrete
+`*http.Transport`, or nil for a shared standard network transport. This keeps
+Agentrail's headers next to the network rather than allowing a nested tracing
+transport to overwrite them after signing. Install other client middleware,
+tracing transports included, outside it.
 
 The middleware preserves response streaming and optional writer interfaces. It
 records the admitted scope: installed after authentication, it does not claim to
-capture earlier authentication or parsing. Replace existing incoming `otelhttp`
-tracing for this scope; wrapping both creates duplicate HTTP entries. A Go
+capture earlier authentication or parsing. Another tracer's middleware can wrap
+it; see [beside other tracers](#beside-sentry-datadog-and-opentelemetry). A Go
 `ServeMux` route pattern is captured when available.
 
 Valid signed handoffs continue their trace. Public or refused context starts a
@@ -26,9 +27,13 @@ the workspace key ID, traceparent, method, exact encoded path/query and a
 millisecond issue time valid for 60 seconds. Configure the same workspace key
 across participating edge/backend services and keep clocks synchronized. Apply
 path/query rewrites before signing. Forwarded headers and caller-declared IDs do
-not establish trust. Managed requests strip baggage, tracestate and Sentry trace
-headers; only exact allowed origins receive newly signed propagation. Redirects
-are checked at each destination, independently of an overridden Host header.
+not establish trust. Calls a managed request makes keep the application's trace
+headers and lose Agentrail's own (`x-agentrail-trace-handoff`, and a CLI's
+`x-agentrail-cli`). Only exact allowed origins receive newly signed propagation:
+its `traceparent` replaces the application's, and the application's `tracestate`
+is dropped. Calls to the collector's own ingestion paths also lose `traceparent`,
+`tracestate`, `baggage` and `sentry-trace`. Redirects are checked at each
+destination, independently of an overridden Host header.
 
 Use `IgnoreIncomingRequest` for trusted internal callers or health endpoints.
 Validate any shared secret before configuring a matching callback. Collector
@@ -106,17 +111,18 @@ capture.Log(r.Context(), agentrail.StructuredLog{
 ```
 
 Import the adapter as `agentrailslog "github.com/agentrail-co/agentrail-go/slog"`.
-Use context-bearing logger calls for exact span correlation. The adapter
+Use context-bearing logger calls for exact span correlation: a log is correlated
+to Agentrail's current span in the context, never to another tracer's current
+span, whose trace Agentrail does not receive. The adapter
 preserves the existing handler's output, groups, filtering and errors.
 `LogValuer` attributes are evaluated only by the application handler and are
 excluded from capture.
 
 Default exports contain severity, error type, event name, stable per-record ID
 and exact span correlation. Message text, arbitrary attributes, exception
-messages, request bodies and raw identities stay out. Supporting span names are
-neutralized. URL evidence retains only valid Agentrail `h` markers; oversized
-optional URLs are omitted without losing the entry. Resource metadata is reduced
-to service/component/hash-key identity, including for external OTel log records.
+messages, request bodies and raw identities stay out. URL evidence retains only
+valid Agentrail `h` markers; oversized optional URLs are omitted without losing
+the entry. Resource metadata is reduced to service/component/hash-key identity.
 Other customer exporters retain their original input.
 
 Message fields require `Logs: agentrail.LogsOptions{IncludeFields: []string{"message"}}`.
@@ -127,34 +133,52 @@ use dot notation. Do not select credentials or sensitive customer content. Set
 never create journey proof. Choose non-sensitive service names, routes, operation
 names and user agents, as those remain customer-controlled context.
 
-## Existing OpenTelemetry
+## Beside Sentry, Datadog and OpenTelemetry
 
-Construct processors before the customer's provider:
+`New` is the only setup, with or without another tracer, and nothing in that
+tracer's setup changes. Put its middleware and client transport outside
+Agentrail's, as [the beside-otel example](../examples/beside-otel/main.go) does
+with `otelhttp`:
 
 ```go
-processors, err := agentrail.NewProcessors(ctx, options)
-if err != nil { return err }
-provider := sdktrace.NewTracerProvider(
-    sdktrace.WithSampler(processors.Sampler(customerSampler)),
-    sdktrace.WithSpanProcessor(customerProcessor),
-    sdktrace.WithSpanProcessor(processors.SpanProcessor),
-)
-capture, err := processors.Bind(provider)
-if err != nil { return err }
-// Add processors.LogProcessor when constructing the customer LoggerProvider.
-// Register processors.Propagator in any retained propagation integration.
+server := &http.Server{Handler: otelhttp.NewHandler(capture.Middleware(mux), "orders-api")}
+client := &http.Client{Transport: otelhttp.NewTransport(capture.Transport(nil))}
 ```
 
-See [the compiling composition example](examples/existing-otel/main.go).
-`Bind` is one-time and explicit; the factory never discovers/replaces a global
-provider. Retain customer resource configuration and other instrumentation.
-The sampler wrapper turns dropped managed spans into record-only spans while
-preserving the customer's sampled flag. Sampled-only exporters keep their
-sampling; exporters that emit record-only spans may observe additional records.
-A processor alone cannot recover spans already dropped by a sampler. Managed
-HTTP wrappers perform request-aware signature verification; a propagator alone
-cannot verify the method or target. Unmanaged propagation delegates to the
-configured base propagator. Agentrail shutdown never shuts down a customer provider.
+Sentry's `sentryhttp.New(...).Handle` and `sentryhttpclient.NewSentryRoundTripper`,
+and Datadog's `httptrace.WrapHandler` and `httptrace.WrapRoundTripper`, go in the
+same places.
+
+Agentrail keeps its current span under a context key of its own. The middleware,
+milestones, identity conflicts, MCP spans, outbound calls and logs read and write
+that key only: OpenTelemetry's current span (otelhttp's, or one the application
+started) is never taken as a parent, cleared or replaced, and Sentry's and
+Datadog's spans live in their own context keys. So, inside a request:
+
+- The other tracer continues the caller's trace, its spans stay children of its
+  own server span, and `trace.SpanFromContext` returns its span, not Agentrail's.
+- A call to an ordinary origin carries the other tracer's `traceparent`,
+  `tracestate`, `baggage`, `sentry-trace` and `x-datadog-*` headers as it set them,
+  and none of Agentrail's.
+- A call to an exact allowed origin carries Agentrail's signed `traceparent` and
+  handoff in place of the other tracer's `traceparent`, without its `tracestate`.
+  Its other headers go through. The other tracer's trace for that one hop
+  therefore continues under Agentrail's trace ID: that is the one limit.
+- Agentrail records the same spans as without the other tracer, and its logs
+  are correlated to its own spans.
+
+A milestone outside a request, inside another tracer's span, starts its own
+trace with a link to that span, which stays current for the work inside it.
+
+The `coexistence` module of this repository tests this with `sentry-go` and
+`dd-trace-go`; it is a module of its own so their dependencies never enter
+agentrail-go's.
+
+0.5.0 removed the setup that put Agentrail's processors on the application's
+tracer provider: `NewProcessors`, `Processors` with its `SpanProcessor`,
+`LogProcessor`, `Propagator`, `Bind` and `Sampler`, `Options.Propagator` and
+`ErrUnbound`. Spans and OpenTelemetry log records the application records are no
+longer copied to Agentrail.
 
 ## MCP
 

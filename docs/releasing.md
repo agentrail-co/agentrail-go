@@ -1,15 +1,28 @@
 # Releasing agentrail-go
 
-The module is prepared as version 0.4.0: the middleware reads a customer CLI's
-`x-agentrail-cli` header (written by `agentrail-cli-sdk`) into `agentrail.cli.*`
-span attributes, the session only as its keyed hash. 0.3.0 added MCP transport
+The module is prepared as version 0.5.0: one setup, `New`, which runs beside
+Sentry, Datadog and the application's own OpenTelemetry. Agentrail's current span
+lives under a context key of its own, so the application's OpenTelemetry span is
+never cleared, and calls keep the application's trace headers (an allowed
+origin's `traceparent` is replaced by Agentrail's signed one and its `tracestate`
+dropped). `NewProcessors`, `Processors` (`SpanProcessor`, `LogProcessor`,
+`Propagator`, `Bind`, `Sampler`), `Options.Propagator` and `ErrUnbound` are
+removed, and the application's own spans and log records are no longer copied.
+For a server with no other tracer, what 0.5.0 sends is unchanged; beside one,
+Agentrail's spans and logs no longer take that tracer's span as their parent or
+correlation. 0.4.0 made the middleware read a customer CLI's `x-agentrail-cli`
+header (written by `agentrail-cli-sdk`) into `agentrail.cli.*` span attributes,
+the session only as its keyed hash. 0.3.0 added MCP transport
 capture (`mcp.Handler`, `mcp.Transport`), handler spans as children of transport
 spans, opt-in payload capture (`Options.MCP`), byte-sized span batches and the
 HTTP request facts on MCP transport spans. v0.2.0 (2026-11-12) was
 the first tag; v0.2.1 changed only the README. Tagging, pushing and
 production deployment are separate operator steps; the build does not perform them.
 
-1. 0.4.0 needs the Argus CLI journeys change (branch `feat/cli-journeys`, commit
+1. 0.5.0 needs no collector change. The public Go guides describe the removed
+   existing-OpenTelemetry setup until the Argus docs change for 0.5.0 is live;
+   publish it with the tag. 0.4.0 needed the Argus CLI journeys change (branch
+   `feat/cli-journeys`, commit
    `92f514c7f`; `testdata/README.md` names the commit `testdata/sdk-contract.json`
    copies now) on production before
    it is tagged: an older collector drops the `agentrail.cli.*` attributes and
@@ -31,12 +44,12 @@ production deployment are separate operator steps; the build does not perform th
 2. Merge the SDK branch into the GitHub repository and run CI. Before tagging,
    run the real receiver gate against the deployed-code revision locally with
    disposable PostgreSQL. Confirm the compatibility matrix against the client.
-3. Confirm `Version` in `options.go` is `0.4.0`, then create and push annotated tag
-   `v0.4.0`. The release workflow verifies formatting/build/vet/race tests,
+3. Confirm `Version` in `options.go` is `0.5.0`, then create and push annotated tag
+   `v0.5.0`. The release workflow verifies formatting/build/vet/race tests,
    vulnerability checks and a separate consumer module before creating the
    GitHub release. Enable GitHub Actions with workflow permission to write releases.
 4. Go modules are distributed from version-control tags: there is no npm publish
-   or package registry token. Verify `go list -m github.com/agentrail-co/agentrail-go@v0.4.0`
+   or package registry token. Verify `go list -m github.com/agentrail-co/agentrail-go@v0.5.0`
    and `go get` from a fresh project after the public tag exists. The local
    consumer gate verifies an unpublished module through a temporary file proxy;
    it does not prove public proxy availability or a published tag.
@@ -48,9 +61,9 @@ production deployment are separate operator steps; the build does not perform th
    secret-manager/environment loading in the application. No public/browser keys.
 7. Install one HTTP middleware, wrapped network transports for outbound calls,
    and request-context logging. Configure only exact outbound origins that should
-   receive signed context. Existing OTel users must compose sampler/processors
-   during provider construction and bind the provider explicitly. Do not layer
-   duplicate incoming HTTP tracing. Ensure Go 1.26+ and synchronized clocks.
+   receive signed context. A server that runs Sentry, Datadog or OpenTelemetry
+   keeps that setup unchanged, with their middleware and transport outside
+   Agentrail's. Ensure Go 1.26+ and synchronized clocks.
    If instrumenting the collector server itself, explicitly exclude its ingestion
    routes using that server's `IgnoreIncomingRequest` policy.
 8. Check a synthetic request/milestone/log in the receiver, inspect diagnostics,
