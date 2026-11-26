@@ -86,7 +86,7 @@ so the agent's CLI runs join its journey. There is nothing to configure.
 Only the exact origins in `OutboundOrigins` receive Agentrail's trace context.
 Complete programs: [HTTP server](https://github.com/agentrail-co/agentrail-go/blob/main/examples/http/main.go),
 [MCP server](https://github.com/agentrail-co/agentrail-go/blob/main/examples/mcp/main.go),
-[beside OpenTelemetry](https://github.com/agentrail-co/agentrail-go/blob/main/examples/beside-otel/main.go).
+[beside OpenTelemetry](https://github.com/agentrail-co/agentrail-go/blob/main/coexistence/examples/beside-otel/main.go).
 
 ## Beside Sentry, Datadog and OpenTelemetry
 

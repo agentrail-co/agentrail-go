@@ -30,27 +30,33 @@ func TestRunsBesideSentry(t *testing.T) {
 		"Sentry-Trace": {sentryTrace + "-" + sentrySpan + "-1"},
 		"Baggage":      {"sentry-trace_id=" + sentryTrace + ",sentry-public_key=public,sentry-sample_rate=1,sentry-sampled=true"},
 	}
-	got := serve(t, incoming, sentryhttp.New(sentryhttp.Options{}).Handle, func(rt http.RoundTripper) http.RoundTripper {
-		return sentryhttpclient.NewSentryRoundTripper(rt)
+	got := serve(t, incoming, &tracer{
+		handler: sentryhttp.New(sentryhttp.Options{}).Handle,
+		transport: func(rt http.RoundTripper) http.RoundTripper {
+			return sentryhttpclient.NewSentryRoundTripper(rt)
+		},
 	})
 	sentry.Flush(0)
 
 	// (1) Sentry continued the caller's trace through our capture.
-	var transaction *sentry.Event
+	transactions := map[string]*sentry.Event{}
 	for _, e := range events.Events() {
 		if e.Type == "transaction" {
-			transaction = e
+			transactions[e.Transaction] = e
 		}
 	}
-	if transaction == nil {
-		t.Fatal("Sentry sent no transaction")
+	for _, name := range []string{"GET /orders"} {
+		transaction := transactions[name]
+		if transaction == nil {
+			t.Fatalf("Sentry sent no %s transaction: %v", name, transactions)
+		}
+		trace := transaction.Contexts["trace"]
+		if id, _ := trace["trace_id"].(sentry.TraceID); id.String() != sentryTrace {
+			t.Fatalf("Sentry's %s transaction did not continue the caller's trace: %v", name, trace)
+		}
 	}
-	trace := transaction.Contexts["trace"]
-	if id, _ := trace["trace_id"].(sentry.TraceID); id.String() != sentryTrace {
-		t.Fatalf("Sentry's transaction did not continue the caller's trace: %v", trace)
-	}
-	if len(transaction.Spans) != 2 {
-		t.Fatalf("Sentry recorded %d calls", len(transaction.Spans))
+	if n := len(transactions["GET /orders"].Spans); n != 2 {
+		t.Fatalf("Sentry recorded %d calls", n)
 	}
 	// (2) The ordinary origin got Sentry's headers, its own call's span named.
 	header := got.ordinary.Get("sentry-trace")
@@ -65,5 +71,5 @@ func TestRunsBesideSentry(t *testing.T) {
 		t.Fatalf("allowed origin lost sentry-trace: %v", got.allowed)
 	}
 	// (3) Our spans and headers are as without Sentry.
-	checkOurs(t, got, serve(t, incoming, unchanged[http.Handler], unchanged[http.RoundTripper]))
+	checkOurs(t, got, serve(t, incoming, nil))
 }

@@ -28,18 +28,21 @@ func TestRunsBesideDatadog(t *testing.T) {
 		"X-Datadog-Parent-Id":         {datadogParent},
 		"X-Datadog-Sampling-Priority": {"1"},
 	}
-	got := serve(t, incoming, func(h http.Handler) http.Handler {
-		return httptrace.WrapHandler(h, "orders-api", "GET /orders")
-	}, func(rt http.RoundTripper) http.RoundTripper { return httptrace.WrapRoundTripper(rt) })
+	got := serve(t, incoming, &tracer{
+		handler: func(h http.Handler) http.Handler {
+			return httptrace.WrapHandler(h, "orders-api", "GET /orders")
+		},
+		transport: func(rt http.RoundTripper) http.RoundTripper { return httptrace.WrapRoundTripper(rt) },
+	})
 
 	// (1) Datadog continued the caller's trace through our capture.
 	var server *mocktracer.Span
 	calls := map[uint64]*mocktracer.Span{}
 	for _, s := range mt.FinishedSpans() {
-		switch s.Tag(ext.SpanKind) {
-		case ext.SpanKindServer:
+		switch {
+		case s.Tag(ext.SpanKind) == ext.SpanKindServer:
 			server = s
-		case ext.SpanKindClient:
+		case s.Tag(ext.SpanKind) == ext.SpanKindClient:
 			calls[s.SpanID()] = s
 		}
 	}
@@ -67,5 +70,5 @@ func TestRunsBesideDatadog(t *testing.T) {
 		t.Fatalf("allowed origin lost x-datadog-trace-id: %v", got.allowed)
 	}
 	// (3) Our spans and headers are as without Datadog.
-	checkOurs(t, got, serve(t, incoming, unchanged[http.Handler], unchanged[http.RoundTripper]))
+	checkOurs(t, got, serve(t, incoming, nil))
 }

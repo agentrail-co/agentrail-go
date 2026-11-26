@@ -137,7 +137,7 @@ names and user agents, as those remain customer-controlled context.
 
 `New` is the only setup, with or without another tracer, and nothing in that
 tracer's setup changes. Put its middleware and client transport outside
-Agentrail's, as [the beside-otel example](../examples/beside-otel/main.go) does
+Agentrail's, as [the beside-otel example](../coexistence/examples/beside-otel/main.go) does
 with `otelhttp`:
 
 ```go
@@ -170,9 +170,9 @@ Datadog's spans live in their own context keys. So, inside a request:
 A milestone outside a request, inside another tracer's span, starts its own
 trace with a link to that span, which stays current for the work inside it.
 
-The `coexistence` module of this repository tests this with `sentry-go` and
-`dd-trace-go`; it is a module of its own so their dependencies never enter
-agentrail-go's.
+The `coexistence` module of this repository tests this with otelhttp,
+`sentry-go` and `dd-trace-go`, and holds the beside-otel example; it is a module
+of its own so their dependencies never enter agentrail-go's.
 
 0.5.0 removed the setup that put Agentrail's processors on the application's
 tracer provider: `NewProcessors`, `Processors` with its `SpanProcessor`,

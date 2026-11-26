@@ -32,7 +32,7 @@ jobs:
       - run: go test ./internal/handoff -run '^$' -fuzz FuzzParseAndVerify -fuzztime 10s
       - run: scripts/check-consumer.sh
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
-  # Sentry and Datadog beside Agentrail, in a module of their own so their
+  # otelhttp, Sentry and Datadog beside Agentrail, in a module of their own so their
   # dependencies stay out of agentrail-go's go.mod.
   coexistence:
     runs-on: ubuntu-latest
