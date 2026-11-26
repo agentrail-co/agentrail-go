@@ -17,10 +17,19 @@ import (
 
 const handoffHeader = "x-agentrail-trace-handoff"
 
-// ownedHeaders never leave in a managed request as the server received them:
-// the trace headers, and a CLI's x-agentrail-cli, which names the CLI's run
-// and session to this server alone.
-var ownedHeaders = []string{"traceparent", "tracestate", "baggage", "sentry-trace", handoffHeader, cliHeaderName}
+// ownedHeaders are Agentrail's own, taken off every call a managed request
+// makes: a handoff is signed for one destination, and a CLI's x-agentrail-cli
+// names the CLI's run and session to this server alone. The application's
+// trace headers (its own OpenTelemetry's, Sentry's, Datadog's) go on as set.
+var ownedHeaders = []string{handoffHeader, cliHeaderName}
+
+// signedHeaders are replaced on a call to an allowed origin, which gets our
+// signed traceparent in place of the application's; the application's
+// tracestate belonged to the traceparent replaced.
+var signedHeaders = []string{"traceparent", "tracestate"}
+
+// collectorHeaders never reach the collector: no tracer's context, nor ours.
+var collectorHeaders = []string{"traceparent", "tracestate", "baggage", "sentry-trace", handoffHeader, cliHeaderName}
 
 func singleHeader(h http.Header, key string) string {
 	count := 0
@@ -38,9 +47,12 @@ func singleHeader(h http.Header, key string) string {
 	}
 	return value
 }
-func clearHeaders(h http.Header) {
+
+// clearHeaders deletes names in any letter case: an application can set a
+// header in the map directly, without canonicalizing its key.
+func clearHeaders(h http.Header, names []string) {
 	for key := range h {
-		for _, name := range ownedHeaders {
+		for _, name := range names {
 			if strings.EqualFold(key, name) {
 				delete(h, key)
 				break
@@ -55,16 +67,13 @@ func (c *Client) collectorRequest(r *http.Request) bool {
 	return origin(r.URL) == c.options.endpointOrigin && c.collectorPath(r.URL.EscapedPath())
 }
 
-// Middleware replaces incoming HTTP tracing for the admitted scope. Install it
-// once; do not also wrap the same request in otelhttp.NewHandler.
+// Middleware records each request it admits. Install it once. Other tracing
+// middleware, such as otelhttp, Sentry's or Datadog's, can wrap it: their span
+// stays current in the request's context, and ours is never its parent nor
+// its child.
 func (c *Client) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if suppressed(r.Context()) || c.closed.Load() || (c.options.IgnoreIncomingRequest != nil && c.options.IgnoreIncomingRequest(r)) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if err := c.ready(); err != nil {
-			c.report(r.Context(), "entry_not_recording", "traces", 1)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -84,25 +93,22 @@ func (c *Client) Middleware(next http.Handler) http.Handler {
 		if header, ok := readCLIHeader(r.Header.Values(cliHeaderName)); ok {
 			state.cli = cliAttributes(c.options.HashKey, header)
 		}
-		ctx := trace.ContextWithSpanContext(r.Context(), trace.SpanContext{})
-		if err == nil {
-			ctx = trace.ContextWithRemoteSpanContext(ctx, sc)
-		} else {
+		if err != nil {
 			if external, ok := handoff.ParseTraceparent(parent); ok {
 				state.links = []trace.Link{{SpanContext: cleanSC(external)}}
 			}
 			if !errors.Is(err, handoff.ErrMissing) {
-				c.report(ctx, "handoff_refused", "context", 1)
+				c.report(r.Context(), "handoff_refused", "context", 1)
 			}
 		}
-		ctx = context.WithValue(ctx, stateKey{c}, state)
+		ctx := context.WithValue(r.Context(), stateKey{c}, state)
 		attrs := []attribute.KeyValue{attribute.String("http.request.method", r.Method), attribute.String("url.full", scheme+"://"+r.Host+target)}
 		if ua := r.UserAgent(); ua != "" {
 			attrs = append(attrs, attribute.String("user_agent.original", ua))
 		}
-		ctx, span := c.tp.Tracer("agentrail-go").Start(ctx, "HTTP "+r.Method, trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(attrs...))
-		// Set before the handler runs, and never changed after.
-		state.entry = span.SpanContext().SpanID()
+		// A verified handoff is the entry's parent; anything else (a public
+		// traceparent, or the span of a tracer wrapped around this one) is not.
+		ctx, span := c.startSpan(ctx, sc, "HTTP "+r.Method, nil, trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(attrs...))
 		if !span.IsRecording() {
 			c.report(ctx, "entry_not_recording", "traces", 1)
 		}

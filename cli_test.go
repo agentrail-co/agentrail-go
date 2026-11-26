@@ -170,10 +170,10 @@ func TestMiddlewareRecordsWhatACLIHeaderSays(t *testing.T) {
 	}
 }
 
-// This fails if someone copies a CLI's facts onto every server span of the
-// request, or lets the server send the header on: a library's own server span
-// inside the request would be a second CLI step, and the next service would
-// learn the CLI's run and session though the CLI never listed it.
+// This fails if someone copies a CLI's facts onto the calls a request makes,
+// or lets the server send the header on: the call would be a second CLI step,
+// and the next service would learn the CLI's run and session though the CLI
+// never listed it.
 func TestCLIHeaderStaysOnTheRequestsOwnSpan(t *testing.T) {
 	raw, err := os.ReadFile("testdata/sdk-contract.json")
 	if err != nil {
@@ -184,17 +184,14 @@ func TestCLIHeaderStaysOnTheRequestsOwnSpan(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, s := collector(t)
-	capture, err := agentrail.NewProcessors(context.Background(), options(s.URL))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(capture.Sampler(sdktrace.AlwaysSample())), sdktrace.WithSpanProcessor(capture.SpanProcessor))
-	defer tp.Shutdown(context.Background())
-	c, err := capture.Bind(tp)
+	c, err := agentrail.New(context.Background(), options(s.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Shutdown(context.Background())
+	// The application's own tracing, which Agentrail neither records nor touches.
+	tp := sdktrace.NewTracerProvider()
+	defer tp.Shutdown(context.Background())
 	var received []string
 	downstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, q *http.Request) {
 		received = append(received, q.Header.Get("x-agentrail-cli"))

@@ -12,6 +12,10 @@ import (
 	agentrail "github.com/agentrail-co/agentrail-go"
 )
 
+// This fails if an allowed origin's call stops being signed or keeps the
+// application's tracestate beside our traceparent, if our signed context
+// follows a redirect to an origin not allowed, or if a public traceparent is
+// trusted as a parent.
 func TestSignedServicesAndRedirectBoundary(t *testing.T) {
 	r, collector := collector(t)
 	o := options(collector.URL)
@@ -20,12 +24,9 @@ func TestSignedServicesAndRedirectBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer downstream.Shutdown(context.Background())
-	var gotHeader string
+	var targetHeaders http.Header
 	target := httptest.NewServer(downstream.Middleware(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
-		gotHeader = q.Header.Get("x-agentrail-trace-handoff")
-		if q.Header.Get("baggage") != "" || q.Header.Get("sentry-trace") != "" || q.Header.Get("tracestate") != "" {
-			t.Error("forbidden propagation")
-		}
+		targetHeaders = q.Header.Clone()
 		io.WriteString(w, "okay")
 	})))
 	defer target.Close()
@@ -61,13 +62,15 @@ func TestSignedServicesAndRedirectBoundary(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://app.test/", nil)
 	req.Header.Set("traceparent", "00-11111111111111111111111111111111-2222222222222222-01")
 	h.ServeHTTP(httptest.NewRecorder(), req)
-	if gotHeader == "" {
-		t.Fatal("missing signed propagation")
+	if targetHeaders.Get("x-agentrail-trace-handoff") == "" || targetHeaders.Get("tracestate") != "" {
+		t.Fatalf("allowed origin got %v", targetHeaders)
 	}
-	for _, key := range []string{"traceparent", "x-agentrail-trace-handoff", "baggage", "sentry-trace", "tracestate"} {
-		if foreignHeaders.Get(key) != "" {
-			t.Fatalf("redirect leaked %s", key)
-		}
+	// The application's other headers are its own and go on as it set them.
+	if targetHeaders.Get("baggage") != "private-baggage" || targetHeaders.Get("sentry-trace") != "private-sentry" {
+		t.Fatalf("allowed origin lost the application's headers: %v", targetHeaders)
+	}
+	if foreignHeaders.Get("x-agentrail-trace-handoff") != "" || foreignHeaders.Get("traceparent") != "00-11111111111111111111111111111111-2222222222222222-01" {
+		t.Fatalf("redirect carried our context: %v", foreignHeaders)
 	}
 	upstream.Flush(context.Background())
 	downstream.Flush(context.Background())

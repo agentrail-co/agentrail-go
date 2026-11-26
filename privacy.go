@@ -119,51 +119,35 @@ func requestFactAttrs(r *mcpspan.Request, id string, status int) []attribute.Key
 	}
 	return attrs
 }
+
+// copySpan copies one of our spans (our tracer provider records no other)
+// with only what the collector reads, sanitized.
 func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnlySpan {
 	original := make(map[string]attribute.Value)
 	for _, a := range s.Attributes() {
 		original[string(a.Key)] = a.Value
 	}
 	attrs := []attribute.KeyValue{}
-	pairs := [][2]string{{"http.request.method", "http.method"}, {"http.route", "http.route"}, {"http.response.status_code", "http.status_code"}, {"user_agent.original", "http.user_agent"}, {"error.type", "exception.type"}}
-	for _, p := range pairs {
-		v, ok := original[p[0]]
-		if !ok {
-			v, ok = original[p[1]]
-		}
+	for _, k := range []string{"http.request.method", "http.route", "http.response.status_code", "user_agent.original", "error.type"} {
+		v, ok := original[k]
 		if !ok {
 			continue
 		}
 		switch v.Type() {
 		case attribute.STRING:
-			attrs = append(attrs, attribute.String(p[0], bounded(v.AsString(), 4096)))
+			attrs = append(attrs, attribute.String(k, bounded(v.AsString(), 4096)))
 		case attribute.INT64:
-			attrs = append(attrs, attribute.Int64(p[0], v.AsInt64()))
+			attrs = append(attrs, attribute.Int64(k, v.AsInt64()))
 		}
 	}
-	if _, ok := original["error.type"]; !ok {
-		for _, e := range s.Events() {
-			if e.Name == "exception" {
-				for _, a := range e.Attributes {
-					if a.Key == "exception.type" && a.Value.Type() == attribute.STRING {
-						attrs = append(attrs, attribute.String("error.type", bounded(a.Value.AsString(), 4096)))
-					}
-				}
-			}
-		}
-	}
-	raw := original["url.full"].AsString()
-	if raw == "" {
-		raw = original["http.url"].AsString()
-	}
-	if raw != "" {
+	if raw := original["url.full"].AsString(); raw != "" {
 		if u := sanitizedURL(raw); u != "" {
 			attrs = append(attrs, attribute.String("url.full", u))
 		}
 	}
 	// A handler span inside its transport span is no step and adds no identity.
 	step := m.mark != nil && (m.mark.mcp == nil || m.mark.mcp.step)
-	entry := step || s.SpanKind() == trace.SpanKindServer || s.SpanKind() == trace.SpanKindConsumer
+	entry := step || s.SpanKind() == trace.SpanKindServer
 	if entry {
 		identity := m.state.principal()
 		if m.mark != nil && m.mark.identity != nil {
@@ -173,18 +157,13 @@ func (c *Client) copySpan(s sdktrace.ReadOnlySpan, m spanMeta) sdktrace.ReadOnly
 		attrs = append(attrs, m.state.location...)
 	}
 	if s.SpanKind() == trace.SpanKindServer {
+		// Our one server span in a request is its entry. A CLI's header says
+		// nothing of the calls this server makes while answering it.
 		attrs = append(attrs, attribute.Bool("agentrail.ingress.verified", m.state.verified))
-		// Only the request's own entry span: a CLI's header says nothing of
-		// the calls this server makes while answering it, nor of a server span
-		// a library opens inside it.
-		if s.SpanContext().SpanID() == m.state.entry {
-			attrs = append(attrs, m.state.cli...)
-		}
+		attrs = append(attrs, m.state.cli...)
 	}
 	name := "backend.operation"
 	if v := original["http.request.method"]; v.Type() == attribute.STRING {
-		name = "HTTP " + v.AsString()
-	} else if v := original["http.method"]; v.Type() == attribute.STRING {
 		name = "HTTP " + v.AsString()
 	}
 	payload := 0

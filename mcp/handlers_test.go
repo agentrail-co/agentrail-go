@@ -15,7 +15,9 @@ import (
 	"github.com/agentrail-co/agentrail-go/internal/handoff"
 	agentrailmcp "github.com/agentrail-co/agentrail-go/mcp"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	collectorlog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	logpb "go.opentelemetry.io/proto/otlp/logs/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -23,6 +25,7 @@ import (
 type capture struct {
 	mu    sync.Mutex
 	spans []*tracepb.Span
+	logs  []*logpb.LogRecord
 }
 
 func newCapture(t *testing.T) (*agentrail.Client, *capture) {
@@ -38,6 +41,21 @@ func newCaptureWith(t *testing.T, configure func(*agentrail.Options)) (*agentrai
 		raw, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Error(err)
+			return
+		}
+		if strings.HasSuffix(req.URL.Path, "/logs") {
+			message := new(collectorlog.ExportLogsServiceRequest)
+			if err := proto.Unmarshal(raw, message); err != nil {
+				t.Error(err)
+				return
+			}
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			for _, resource := range message.ResourceLogs {
+				for _, scope := range resource.ScopeLogs {
+					r.logs = append(r.logs, scope.LogRecords...)
+				}
+			}
 			return
 		}
 		if !strings.HasSuffix(req.URL.Path, "/traces") {

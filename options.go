@@ -13,11 +13,9 @@ import (
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
-
-	"go.opentelemetry.io/otel/propagation"
 )
 
-const Version = "0.4.0"
+const Version = "0.5.0"
 
 type CollectorOptions struct {
 	Endpoint string
@@ -86,7 +84,6 @@ type Options struct {
 	Logs                         LogsOptions
 	Queue                        QueueOptions
 	MCP                          MCPOptions
-	Propagator                   propagation.TextMapPropagator
 	OnError                      func(context.Context, CaptureError)
 	endpointOrigin, endpointPath string
 }
@@ -106,7 +103,6 @@ type ConfigurationError struct{ Problem string }
 func (e *ConfigurationError) Error() string { return "Agentrail configuration: " + e.Problem }
 
 var ErrClosed = errors.New("Agentrail capture is shut down")
-var ErrUnbound = errors.New("Agentrail processors must be bound to a tracer provider")
 
 type suppressionKey struct{}
 

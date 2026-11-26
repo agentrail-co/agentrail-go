@@ -8,6 +8,7 @@ require (
 	github.com/dunglas/httpsfv v1.1.2
 	github.com/felixge/httpsnoop v1.1.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.23.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0

@@ -11,14 +11,6 @@ import (
 	"testing"
 
 	agentrail "github.com/agentrail-co/agentrail-go"
-	"go.opentelemetry.io/otel/attribute"
-	apilog "go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/propagation"
-	sdklog "go.opentelemetry.io/otel/sdk/log"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	"go.opentelemetry.io/otel/trace"
 	common "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
@@ -41,73 +33,6 @@ func spans(r *receiver) []*tracepb.Span {
 		}
 	}
 	return out
-}
-func TestExistingProviderSamplingAndPrivacyIsolation(t *testing.T) {
-	r, s := collector(t)
-	o := options(s.URL)
-	o.Propagator = propagation.TraceContext{}
-	capture, err := agentrail.NewProcessors(context.Background(), o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	customer := tracetest.NewInMemoryExporter()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithResource(resource.NewSchemaless(attribute.String("customer.resource", "private-resource"))), sdktrace.WithSampler(capture.Sampler(sdktrace.NeverSample())), sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(customer)), sdktrace.WithSpanProcessor(capture.SpanProcessor))
-	defer tp.Shutdown(context.Background())
-	c, err := capture.Bind(tp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Shutdown(context.Background())
-	lp := sdklog.NewLoggerProvider(sdklog.WithResource(resource.NewSchemaless(attribute.String("customer.secret", "private-resource"))), sdklog.WithProcessor(capture.LogProcessor))
-	defer lp.Shutdown(context.Background())
-	h := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, sp := tp.Tracer("private-scope").Start(r.Context(), "private-operation", trace.WithAttributes(attribute.String("customer.secret", "private-attribute")))
-		sp.AddEvent("private-event")
-		defer sp.End()
-		var record apilog.Record
-		record.SetBody(attribute.StringValue("private-body"))
-		lp.Logger("private-logger").Emit(ctx, record)
-	}))
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("HEAD", "http://app.test/private", nil))
-	if err := c.Flush(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(spans(r)) != 2 {
-		t.Fatalf("lost record-only spans: %d", len(spans(r)))
-	}
-	if len(customer.GetSpans()) != 0 {
-		t.Fatal("changed customer sampling")
-	}
-	for _, x := range r.traces {
-		if strings.Contains(fmt.Sprint(x), "private-") {
-			t.Fatal("private span field leaked")
-		}
-		for _, rs := range x.ResourceSpans {
-			for _, ss := range rs.ScopeSpans {
-				for _, sp := range ss.Spans {
-					if sp.Flags&1 != 0 {
-						t.Fatal("promoted sampled flag")
-					}
-				}
-			}
-		}
-	}
-	for _, x := range r.logs {
-		if strings.Contains(fmt.Sprint(x), "private-") {
-			t.Fatal("private log/resource leaked")
-		}
-	}
-	// A customer provider remains operational after Agentrail shutdown.
-	if err := c.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	_, sp := tp.Tracer("customer").Start(context.Background(), "still-running", trace.WithNewRoot())
-	if sp.IsRecording() {
-		t.Fatal("NeverSample unexpectedly recording")
-	}
-	sp.End()
 }
 func TestIdentityIsolationAndConflicts(t *testing.T) {
 	r, s := collector(t)

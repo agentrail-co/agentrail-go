@@ -6,7 +6,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	apilog "go.opentelemetry.io/otel/log"
-	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -59,40 +58,7 @@ func (c *Client) emitLog(ctx context.Context, input StructuredLog, stamp, observ
 		attrs = append(attrs, attribute.Bool("agentrail.log.body_allowed", true))
 	}
 	r.AddAttributes(attrs...)
-	c.logger.Emit(ctx, r)
-}
-func (c *Client) copyLog(ctx context.Context, r *sdklog.Record) {
-	fields := map[string]any{}
-	if r.Body().Type() == attribute.STRING {
-		fields["message"] = r.Body().AsString()
-	}
-	input := StructuredLog{SeverityNumber: int(r.Severity()), SeverityText: r.SeverityText(), EventName: r.EventName(), Fields: fields}
-	r.WalkAttributes(func(a attribute.KeyValue) bool {
-		key := string(a.Key)
-		switch key {
-		case "error.type", "exception.type":
-			if a.Value.Type() == attribute.STRING {
-				input.ErrorType = a.Value.AsString()
-			}
-		case "event.name":
-			if a.Value.Type() == attribute.STRING {
-				input.EventName = a.Value.AsString()
-			}
-		}
-		switch a.Value.Type() {
-		case attribute.STRING:
-			fields[key] = a.Value.AsString()
-		case attribute.BOOL:
-			fields[key] = a.Value.AsBool()
-		case attribute.INT64:
-			fields[key] = a.Value.AsInt64()
-		case attribute.FLOAT64:
-			fields[key] = a.Value.AsFloat64()
-		}
-		return true
-	})
-	// The log record's exact correlation wins over any unrelated active span.
-	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: r.TraceID(), SpanID: r.SpanID(), TraceFlags: r.TraceFlags()})
-	ctx = trace.ContextWithSpanContext(ctx, sc)
-	c.emitLog(ctx, input, r.Timestamp(), r.ObservedTimestamp())
+	// Correlated to our current span only. The application's own current span
+	// names a trace Agentrail never receives, so a log outside ours has none.
+	c.logger.Emit(trace.ContextWithSpanContext(ctx, c.parent(ctx)), r)
 }

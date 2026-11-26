@@ -28,8 +28,8 @@ func (c *Client) Identify(ctx context.Context, id VerifiedIdentity) error {
 	if suppressed(ctx) {
 		return nil
 	}
-	if err := c.ready(); err != nil {
-		return err
+	if c.closed.Load() {
+		return ErrClosed
 	}
 	if id.ID == "" || !validText(id.ID, 1<<20) || !validText(id.ActingUserID, 1<<20) {
 		return &ConfigurationError{Problem: "identity IDs must be nonempty valid UTF-8 text"}
@@ -60,7 +60,7 @@ func (c *Client) Identify(ctx context.Context, id VerifiedIdentity) error {
 		return nil
 	}
 	m := &mark{name: "identity.asserted", details: MilestoneContext{Surface: SurfaceAuth, Kind: "auth.identity"}, identity: attrs}
-	_, span := c.tp.Tracer("agentrail-go").Start(context.WithValue(ctx, markKey{c}, m), m.name)
+	_, span := c.startSpan(ctx, c.parent(ctx), m.name, m)
 	span.End()
 	return nil
 }
