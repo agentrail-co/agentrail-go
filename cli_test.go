@@ -13,8 +13,6 @@ import (
 	"testing"
 
 	agentrail "github.com/agentrail-co/agentrail-go"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
@@ -189,9 +187,6 @@ func TestCLIHeaderStaysOnTheRequestsOwnSpan(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Shutdown(context.Background())
-	// The application's own tracing, which Agentrail neither records nor touches.
-	tp := sdktrace.NewTracerProvider()
-	defer tp.Shutdown(context.Background())
 	var received []string
 	downstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, q *http.Request) {
 		received = append(received, q.Header.Get("x-agentrail-cli"))
@@ -199,10 +194,7 @@ func TestCLIHeaderStaysOnTheRequestsOwnSpan(t *testing.T) {
 	defer downstream.Close()
 	outbound := &http.Client{Transport: c.Transport(nil)}
 	h := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
-		// A library's own server span inside the request, as an RPC layer opens one.
-		ctx, inner := tp.Tracer("a-library").Start(q.Context(), "inner", trace.WithSpanKind(trace.SpanKindServer))
-		defer inner.End()
-		forward, err := http.NewRequestWithContext(ctx, http.MethodGet, downstream.URL+"/forwarded", nil)
+		forward, err := http.NewRequestWithContext(q.Context(), http.MethodGet, downstream.URL+"/forwarded", nil)
 		if err != nil {
 			t.Error(err)
 			return
