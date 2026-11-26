@@ -30,6 +30,9 @@ type tracer struct {
 	// handler and transport wrap our middleware and our transport.
 	handler   func(http.Handler) http.Handler
 	transport func(http.RoundTripper) http.RoundTripper
+	// downstream, when set, wraps the allowed origin's service: it runs the
+	// same tracer.
+	downstream func(http.Handler) http.Handler
 	// work, when set, runs first in the handler and returns the context the
 	// handler logs and calls with, and a function to end it.
 	work func(context.Context) (context.Context, func())
@@ -87,13 +90,16 @@ func serve(t *testing.T, incoming http.Header, other *tracer) outcome {
 	}))
 	defer collector.Close()
 	received := map[string]http.Header{}
-	record := http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+	var record http.Handler = http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		received[q.URL.Path] = q.Header.Clone()
 	})
 	ordinary := httptest.NewServer(record)
 	defer ordinary.Close()
+	if other != nil && other.downstream != nil {
+		record = other.downstream(record)
+	}
 	allowed := httptest.NewServer(record)
 	defer allowed.Close()
 	c, err := agentrail.New(context.Background(), agentrail.Options{

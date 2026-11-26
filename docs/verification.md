@@ -189,3 +189,24 @@ hostname prefix taken for the collector, CLI facts copied onto outbound
 spans, `x-agentrail-cli` sent on, and log times replaced. The real receiver
 gate was not run here; `integration/capture` now sends three spans (the
 outbound call is the supporting span) to the unchanged receiver test.
+
+Review fixes (toolchain go1.26.11). A new root span is started from a context
+with no application span current, so the OTel SDK no longer counts Agentrail's
+entry or a standalone milestone among the children of otelhttp's server span or
+an application job span. `New` sets its exporters' compression (none), TLS
+(standard, never `OTEL_EXPORTER_OTLP_CERTIFICATE` or the client certificate and
+key) and its span and log record limits (the SDK defaults); headers, timeout,
+endpoint and sampler were already set. A call to the collector's own ingestion
+path is tested to lose all six trace headers and record no span. otelhttp, its
+tests and the beside-otel example moved into `coexistence/`; the root `go.mod`
+and `go.sum` are as on `main`. The Sentry and Datadog tests also run that tracer
+on the allowed origin's service and check it continued its own trace. Mutations
+caught: the application's span left current for a new root (otelhttp server
+span and job span counted 2 children), the collector branch removed or
+stripping only Agentrail's headers, compression, TLS, span limits, log record
+limits, headers, timeout and sampler each left to the environment, and an
+allowed origin losing `sentry-trace` and `baggage` or `x-datadog-parent-id`
+(the downstream trace became Agentrail's). Not fixed: the log provider merges
+`OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` into the resource of
+exported log records (`sdklog.WithResource` merges `resource.Environment()`;
+`service.name` stays Agentrail's), as on `main`.

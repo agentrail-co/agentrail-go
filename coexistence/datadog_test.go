@@ -17,9 +17,10 @@ const (
 )
 
 // This fails if Agentrail's capture stops Datadog's trace continuing: its
-// request span no longer continuing the caller's, or its x-datadog-* or
-// traceparent headers taken off the application's calls. It fails too if
-// our own spans stop arriving, or change, beside Datadog.
+// request span no longer continuing the caller's, its x-datadog-* or
+// traceparent headers taken off the application's calls, or the allowed
+// origin's service no longer continuing it. It fails too if our own spans
+// stop arriving, or change, beside Datadog.
 func TestRunsBesideDatadog(t *testing.T) {
 	mt := mocktracer.Start()
 	defer mt.Stop()
@@ -33,15 +34,20 @@ func TestRunsBesideDatadog(t *testing.T) {
 			return httptrace.WrapHandler(h, "orders-api", "GET /orders")
 		},
 		transport: func(rt http.RoundTripper) http.RoundTripper { return httptrace.WrapRoundTripper(rt) },
+		downstream: func(h http.Handler) http.Handler {
+			return httptrace.WrapHandler(h, "inventory-api", "GET /allowed")
+		},
 	})
 
 	// (1) Datadog continued the caller's trace through our capture.
-	var server *mocktracer.Span
+	var server, downstream *mocktracer.Span
 	calls := map[uint64]*mocktracer.Span{}
 	for _, s := range mt.FinishedSpans() {
 		switch {
-		case s.Tag(ext.SpanKind) == ext.SpanKindServer:
+		case s.Tag(ext.SpanKind) == ext.SpanKindServer && s.Tag(ext.ResourceName) == "GET /orders":
 			server = s
+		case s.Tag(ext.SpanKind) == ext.SpanKindServer:
+			downstream = s
 		case s.Tag(ext.SpanKind) == ext.SpanKindClient:
 			calls[s.SpanID()] = s
 		}
@@ -65,9 +71,16 @@ func TestRunsBesideDatadog(t *testing.T) {
 	if got.ordinary.Get("traceparent") == "" || got.ordinary.Get("tracestate") == "" {
 		t.Fatalf("ordinary origin lost Datadog's W3C headers: %v", got.ordinary)
 	}
-	// The allowed origin keeps Datadog's own headers beside our traceparent.
+	// The allowed origin keeps Datadog's own headers beside our traceparent,
+	// and its service, given our traceparent, continued Datadog's trace.
 	if got.allowed.Get("x-datadog-trace-id") != datadogTrace {
 		t.Fatalf("allowed origin lost x-datadog-trace-id: %v", got.allowed)
+	}
+	if downstream == nil {
+		t.Fatal("the allowed origin's service recorded no Datadog span")
+	}
+	if _, ok := calls[downstream.ParentID()]; strconv.FormatUint(downstream.Context().TraceIDLower(), 10) != datadogTrace || !ok {
+		t.Fatalf("the allowed origin's Datadog span did not continue the caller's trace: %v", downstream)
 	}
 	// (3) Our spans and headers are as without Datadog.
 	checkOurs(t, got, serve(t, incoming, nil))

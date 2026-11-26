@@ -110,10 +110,12 @@ set next to the network.
 
 On calls to any origin outside `OutboundOrigins`, the other tracer's headers
 (`traceparent`, `tracestate`, `baggage`, `sentry-trace`, `x-datadog-*`) go out as it
-set them, and Agentrail's own never do. One limit: on a call to an allowed origin,
-Agentrail's signed `traceparent` replaces the other tracer's and its `tracestate`
-is dropped, so that tracer's trace for that one hop continues under Agentrail's
-trace ID. Its other headers go through unchanged.
+set them, and Agentrail's own never do. On a call to an allowed origin, Agentrail's
+signed `traceparent` replaces the other tracer's and its `tracestate` is dropped;
+its other headers go through unchanged. One limit follows for a tracer that
+propagates by `traceparent` alone, as OpenTelemetry does by default: its trace for
+that one hop continues under Agentrail's trace ID. Sentry (`sentry-trace`) and
+Datadog (`x-datadog-*`) keep their own trace there, as their headers go through.
 
 Agentrail records only its own spans. Spans your code or its libraries start inside
 a request go to your tracer, not to Agentrail, and `trace.SpanFromContext` in a

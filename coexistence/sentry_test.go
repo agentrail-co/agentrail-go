@@ -17,9 +17,10 @@ const (
 )
 
 // This fails if Agentrail's capture stops Sentry's trace continuing: its
-// transaction no longer continuing the caller's, or its sentry-trace, baggage
-// or traceparent taken off the application's calls. It fails too if our own
-// spans stop arriving, or change, beside Sentry.
+// transaction no longer continuing the caller's, its sentry-trace, baggage or
+// traceparent taken off the application's calls, or the allowed origin's
+// service no longer continuing it. It fails too if our own spans stop
+// arriving, or change, beside Sentry.
 func TestRunsBesideSentry(t *testing.T) {
 	events := &sentry.MockTransport{}
 	if err := sentry.Init(sentry.ClientOptions{Dsn: "https://public@sentry.example.com/1", EnableTracing: true, TracesSampleRate: 1, PropagateTraceparent: true, Transport: events}); err != nil {
@@ -35,17 +36,19 @@ func TestRunsBesideSentry(t *testing.T) {
 		transport: func(rt http.RoundTripper) http.RoundTripper {
 			return sentryhttpclient.NewSentryRoundTripper(rt)
 		},
+		downstream: sentryhttp.New(sentryhttp.Options{}).Handle,
 	})
 	sentry.Flush(0)
 
-	// (1) Sentry continued the caller's trace through our capture.
+	// (1) Sentry continued the caller's trace through our capture, and the
+	// allowed origin's service, given our traceparent, continued Sentry's.
 	transactions := map[string]*sentry.Event{}
 	for _, e := range events.Events() {
 		if e.Type == "transaction" {
 			transactions[e.Transaction] = e
 		}
 	}
-	for _, name := range []string{"GET /orders"} {
+	for _, name := range []string{"GET /orders", "GET /allowed"} {
 		transaction := transactions[name]
 		if transaction == nil {
 			t.Fatalf("Sentry sent no %s transaction: %v", name, transactions)

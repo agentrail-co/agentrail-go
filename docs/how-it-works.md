@@ -162,8 +162,11 @@ Datadog's spans live in their own context keys. So, inside a request:
   and none of Agentrail's.
 - A call to an exact allowed origin carries Agentrail's signed `traceparent` and
   handoff in place of the other tracer's `traceparent`, without its `tracestate`.
-  Its other headers go through. The other tracer's trace for that one hop
-  therefore continues under Agentrail's trace ID: that is the one limit.
+  Its other headers go through. That is the one limit, and only for a tracer
+  that propagates by `traceparent` alone, as OpenTelemetry does by default: its
+  trace for that one hop continues under Agentrail's trace ID. Sentry's
+  `sentry-trace` and Datadog's `x-datadog-*` go through, so the allowed origin's
+  Sentry or Datadog continues their own trace.
 - Agentrail records the same spans as without the other tracer, and its logs
   are correlated to its own spans.
 
