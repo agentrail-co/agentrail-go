@@ -12,7 +12,8 @@ import (
 )
 
 // This fails if a milestone outside a request takes the application's span
-// out of the context its work runs in, or stops linking to it.
+// out of the context its work runs in, stops linking to it, or counts itself
+// among that span's children.
 func TestMilestoneOutsideARequestKeepsTheApplicationsSpan(t *testing.T) {
 	r, s := collector(t)
 	c, err := agentrail.New(context.Background(), options(s.URL))
@@ -45,6 +46,9 @@ func TestMilestoneOutsideARequestKeepsTheApplicationsSpan(t *testing.T) {
 	}
 	if theirs["application.step"].Parent.SpanID() != job.SpanContext().SpanID() {
 		t.Fatalf("the application's step is not a child of its job: %v", theirs["application.step"].Parent)
+	}
+	if n := theirs["application.job"].ChildSpanCount; n != 1 {
+		t.Fatalf("the application's job counts %d children, its step alone", n)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

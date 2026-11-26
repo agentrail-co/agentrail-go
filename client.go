@@ -111,10 +111,13 @@ func (c *Client) parent(ctx context.Context) trace.SpanContext {
 // whatever OpenTelemetry span was current in ctx stays current.
 func (c *Client) startSpan(ctx context.Context, parent trace.SpanContext, name string, m *mark, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	start := context.WithValue(ctx, markKey{c}, m)
+	// Either way no application span is left current in our tracer's context:
+	// the OTel SDK counts a child on whatever SDK span is current there, even
+	// for a new root.
 	if parent.IsValid() {
 		start = trace.ContextWithSpanContext(start, parent)
 	} else {
-		opts = append(opts, trace.WithNewRoot())
+		start = trace.ContextWithSpanContext(start, trace.SpanContext{})
 	}
 	_, span := c.tracer.Start(start, name, opts...)
 	return context.WithValue(ctx, spanKey{c}, span), span

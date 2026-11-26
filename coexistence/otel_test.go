@@ -51,8 +51,8 @@ func beside(t *testing.T) (outcome, []tracetest.SpanStub) {
 }
 
 // This fails if someone clears or replaces OpenTelemetry's span in the
-// request's context again, or strips the application's trace headers from
-// its calls: the application's trace
+// request's context again, counts our entry among its children, or strips
+// the application's trace headers from its calls: the application's trace
 // would stop at our middleware, its spans would hang off ours, or its next
 // service would start a new trace.
 func TestRunsBesideOpenTelemetry(t *testing.T) {
@@ -76,6 +76,9 @@ func TestRunsBesideOpenTelemetry(t *testing.T) {
 	}
 	if work.Parent.SpanID() != server.SpanContext.SpanID() {
 		t.Fatalf("the application's own span is not a child of its server span: %v", work.Parent)
+	}
+	if server.ChildSpanCount != 1 {
+		t.Fatalf("the application's server span counts %d children, its own span alone", server.ChildSpanCount)
 	}
 	if len(calls) != 2 {
 		t.Fatalf("the application recorded %d calls", len(calls))
