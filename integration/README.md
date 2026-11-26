@@ -8,9 +8,9 @@ ARGUS_DIR=/absolute/path/to/argus ./integration/run.sh
 ```
 
 The runner builds and executes `capture/main.go` using the public Go SDK. A local
-HTTP application identifies a synthetic user, opens a custom milestone, records
-two correlated logs, and makes an outbound request beneath a supporting OTel
-span. A local collector records the actual OTLP protobuf request bytes. There
+HTTP application identifies a synthetic user, opens a custom milestone, makes an
+outbound request beneath it (the supporting span), and records two correlated
+logs: one in the milestone, one with the outbound call's context. A local collector records the actual OTLP protobuf request bytes. There
 are no provider calls, real identities, production configuration files, or
 production credentials. The fixed collector token and workspace hash key in the
 program are synthetic test constants.
@@ -25,7 +25,8 @@ then repeats every delivery unchanged.
 
 Fresh database reads verify:
 
-- Four immutable spans and two logs survive retries without duplication.
+- Three immutable spans and two logs survive retries without duplication (four
+  before 0.5.0, when the application's own supporting span was copied too).
 - The resource retains `agentrail-go`, its service identity, and hash key ID.
 - Both the HTTP entry and custom milestone become entries; supporting spans
   remain ancestry beneath the milestone.

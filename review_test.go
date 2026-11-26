@@ -5,18 +5,18 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	agentrail "github.com/agentrail-co/agentrail-go"
-	"go.opentelemetry.io/otel/attribute"
-	apilog "go.opentelemetry.io/otel/log"
-	sdklog "go.opentelemetry.io/otel/sdk/log"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
 
-func TestCollectorPrefixDoesNotBypassPropagationBoundary(t *testing.T) {
+// This fails if a host that only starts with the collector's is taken for
+// the collector: the call would lose the application's trace headers, which
+// only a call to the collector itself does.
+func TestCollectorHostnamePrefixIsNotTheCollector(t *testing.T) {
 	var received http.Header
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received = r.Header.Clone() }))
 	defer target.Close()
@@ -35,7 +35,7 @@ func TestCollectorPrefixDoesNotBypassPropagationBoundary(t *testing.T) {
 	}}
 	defer base.CloseIdleConnections()
 	h := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		q, _ := http.NewRequestWithContext(r.Context(), "GET", "http://collector.example.attacker.test/", nil)
+		q, _ := http.NewRequestWithContext(r.Context(), "GET", "http://collector.example.attacker.test/v1/traces", nil)
 		q.Header.Set("baggage", "private-baggage")
 		q.Header.Set("traceparent", "00-11111111111111111111111111111111-2222222222222222-01")
 		resp, err := c.Transport(base).RoundTrip(q)
@@ -47,8 +47,8 @@ func TestCollectorPrefixDoesNotBypassPropagationBoundary(t *testing.T) {
 	}))
 	q := httptest.NewRequest("GET", "http://app.test/", nil)
 	h.ServeHTTP(httptest.NewRecorder(), q)
-	if received.Get("baggage") != "" || received.Get("traceparent") != "" {
-		t.Fatal("collector hostname prefix bypassed propagation cleaning")
+	if received.Get("baggage") != "private-baggage" || received.Get("traceparent") != "00-11111111111111111111111111111111-2222222222222222-01" {
+		t.Fatalf("a collector hostname prefix was treated as the collector: %v", received)
 	}
 	cancel()
 }
@@ -71,29 +71,71 @@ func TestStandaloneMilestoneRetainsExternalDirectionalLink(t *testing.T) {
 		t.Fatal("lost directional link or trusted external parent")
 	}
 }
-func TestOTelLogEventNameAndOriginalTimes(t *testing.T) {
-	r, s := collector(t)
-	p, err := agentrail.NewProcessors(context.Background(), options(s.URL))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(p.SpanProcessor))
-	defer tp.Shutdown(context.Background())
-	c, err := p.Bind(tp)
+
+// This fails if a call the application makes to the collector's own
+// ingestion path keeps any trace header, another tracer's or Agentrail's, or
+// is recorded as a client span of the request.
+func TestCollectorCallsCarryNoTraceHeaders(t *testing.T) {
+	var mu sync.Mutex
+	var received []http.Header
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+		if q.Method == http.MethodGet {
+			mu.Lock()
+			received = append(received, q.Header.Clone())
+			mu.Unlock()
+		}
+	}))
+	defer collector.Close()
+	c, err := agentrail.New(context.Background(), options(collector.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Shutdown(context.Background())
-	lp := sdklog.NewLoggerProvider(sdklog.WithProcessor(p.LogProcessor))
-	defer lp.Shutdown(context.Background())
+	names := []string{"traceparent", "tracestate", "baggage", "sentry-trace", "x-agentrail-trace-handoff", "x-agentrail-cli"}
+	h := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q, err := http.NewRequestWithContext(r.Context(), http.MethodGet, collector.URL+"/ingest/otlp/v1/traces", nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		for _, name := range names {
+			q.Header.Set(name, "set-by-the-application")
+		}
+		resp, err := c.Transport(nil).RoundTrip(q)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		resp.Body.Close()
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://app.test/", nil))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("collector received %d calls", len(received))
+	}
+	for _, name := range names {
+		if received[0].Get(name) != "" {
+			t.Fatalf("collector call kept %s: %v", name, received[0])
+		}
+	}
+	if n := c.Diagnostics().Spans.Accepted; n != 1 {
+		t.Fatalf("recorded %d spans; the request's entry alone, not its collector call", n)
+	}
+}
+
+// This fails if Client.Log drops a log's event name or replaces the times
+// the application gave it.
+func TestLogEventNameAndOriginalTimes(t *testing.T) {
+	r, s := collector(t)
+	c, err := agentrail.New(context.Background(), options(s.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Shutdown(context.Background())
 	stamp := time.Now().Add(-time.Hour).Truncate(time.Second)
 	observed := stamp.Add(time.Second)
-	var rec apilog.Record
-	rec.SetTimestamp(stamp)
-	rec.SetObservedTimestamp(observed)
-	rec.SetEventName("source.event")
-	rec.AddAttributes(attribute.String("private.field", "private-value"))
-	lp.Logger("source").Emit(context.Background(), rec)
+	c.Log(context.Background(), agentrail.StructuredLog{EventName: "source.event", Timestamp: stamp, ObservedTimestamp: observed})
 	c.Log(context.Background(), agentrail.StructuredLog{EventName: "direct.event"})
 	c.Flush(context.Background())
 	r.mu.Lock()

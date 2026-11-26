@@ -169,7 +169,7 @@ func (c *Client) mcpTransport(ctx context.Context, call mcpspan.Call) mcpspan.Sp
 }
 func (t *transportSpan) Graft(ctx context.Context) context.Context {
 	ctx = context.WithValue(ctx, stateKey{t.client}, t.client.state(t.ctx))
-	return trace.ContextWithSpan(ctx, t.span)
+	return context.WithValue(ctx, spanKey{t.client}, t.span)
 }
 func (t *transportSpan) End(o mcpspan.Outcome) {
 	t.once.Do(func() { t.end(o) })

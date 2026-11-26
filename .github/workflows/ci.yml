@@ -32,3 +32,25 @@ jobs:
       - run: go test ./internal/handoff -run '^$' -fuzz FuzzParseAndVerify -fuzztime 10s
       - run: scripts/check-consumer.sh
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+  # otelhttp, Sentry and Datadog beside Agentrail, in a module of their own so their
+  # dependencies stay out of agentrail-go's go.mod.
+  coexistence:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.26.x', 'stable']
+    defaults:
+      run:
+        working-directory: coexistence
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+          cache: true
+          cache-dependency-path: coexistence/go.sum
+      - run: go mod tidy -diff
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...

@@ -13,8 +13,6 @@ import (
 	"testing"
 
 	agentrail "github.com/agentrail-co/agentrail-go"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
@@ -170,10 +168,10 @@ func TestMiddlewareRecordsWhatACLIHeaderSays(t *testing.T) {
 	}
 }
 
-// This fails if someone copies a CLI's facts onto every server span of the
-// request, or lets the server send the header on: a library's own server span
-// inside the request would be a second CLI step, and the next service would
-// learn the CLI's run and session though the CLI never listed it.
+// This fails if someone copies a CLI's facts onto the calls a request makes,
+// or lets the server send the header on: the call would be a second CLI step,
+// and the next service would learn the CLI's run and session though the CLI
+// never listed it.
 func TestCLIHeaderStaysOnTheRequestsOwnSpan(t *testing.T) {
 	raw, err := os.ReadFile("testdata/sdk-contract.json")
 	if err != nil {
@@ -184,13 +182,7 @@ func TestCLIHeaderStaysOnTheRequestsOwnSpan(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, s := collector(t)
-	capture, err := agentrail.NewProcessors(context.Background(), options(s.URL))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(capture.Sampler(sdktrace.AlwaysSample())), sdktrace.WithSpanProcessor(capture.SpanProcessor))
-	defer tp.Shutdown(context.Background())
-	c, err := capture.Bind(tp)
+	c, err := agentrail.New(context.Background(), options(s.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,10 +194,7 @@ func TestCLIHeaderStaysOnTheRequestsOwnSpan(t *testing.T) {
 	defer downstream.Close()
 	outbound := &http.Client{Transport: c.Transport(nil)}
 	h := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
-		// A library's own server span inside the request, as an RPC layer opens one.
-		ctx, inner := tp.Tracer("a-library").Start(q.Context(), "inner", trace.WithSpanKind(trace.SpanKindServer))
-		defer inner.End()
-		forward, err := http.NewRequestWithContext(ctx, http.MethodGet, downstream.URL+"/forwarded", nil)
+		forward, err := http.NewRequestWithContext(q.Context(), http.MethodGet, downstream.URL+"/forwarded", nil)
 		if err != nil {
 			t.Error(err)
 			return

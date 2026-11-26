@@ -16,15 +16,17 @@ import (
 
 	agentrail "github.com/agentrail-co/agentrail-go"
 	agentrailslog "github.com/agentrail-co/agentrail-go/slog"
-	"go.opentelemetry.io/otel/trace"
 	collectorlog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	logpb "go.opentelemetry.io/proto/otlp/logs/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
 
 type collector struct {
-	mu   sync.Mutex
-	logs []*logpb.LogRecord
+	mu    sync.Mutex
+	logs  []*logpb.LogRecord
+	spans []*tracepb.Span
 }
 
 func newCapture(t *testing.T, fields ...string) (*agentrail.Client, *collector) {
@@ -36,17 +38,29 @@ func newCapture(t *testing.T, fields ...string) (*agentrail.Client, *collector) 
 			t.Error(err)
 			return
 		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
 		if strings.HasSuffix(req.URL.Path, "/logs") {
 			message := new(collectorlog.ExportLogsServiceRequest)
 			if err := proto.Unmarshal(raw, message); err != nil {
 				t.Error(err)
 				return
 			}
-			r.mu.Lock()
-			defer r.mu.Unlock()
 			for _, resource := range message.ResourceLogs {
 				for _, scope := range resource.ScopeLogs {
 					r.logs = append(r.logs, scope.LogRecords...)
+				}
+			}
+		}
+		if strings.HasSuffix(req.URL.Path, "/traces") {
+			message := new(collectortrace.ExportTraceServiceRequest)
+			if err := proto.Unmarshal(raw, message); err != nil {
+				t.Error(err)
+				return
+			}
+			for _, resource := range message.ResourceSpans {
+				for _, scope := range resource.ScopeSpans {
+					r.spans = append(r.spans, scope.Spans...)
 				}
 			}
 		}
@@ -92,7 +106,6 @@ func TestComposesApplicationOutputAndCorrelatesWithoutMessage(t *testing.T) {
 	record := slog.NewRecord(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), slog.LevelError, "private-message", 0)
 	record.AddAttrs(slog.String("event.name", "checkout.failed"), slog.Any("error", errors.New("private-error")), slog.String("password", "private-password"))
 	ctx, end := c.StartMilestone(context.Background(), "checkout", agentrail.MilestoneContext{Surface: agentrail.SurfaceCustom, Kind: "test"})
-	sc := trace.SpanContextFromContext(ctx)
 	if err := wrapped.Handle(ctx, record); err != nil {
 		t.Fatal(err)
 	}
@@ -108,9 +121,11 @@ func TestComposesApplicationOutputAndCorrelatesWithoutMessage(t *testing.T) {
 		t.Fatalf("got %d logs", len(got))
 	}
 	log := got[0]
-	traceID := sc.TraceID()
-	if !bytes.Equal(log.TraceId, traceID[:]) {
-		t.Fatalf("wrong trace: %x", log.TraceId)
+	receiver.mu.Lock()
+	milestone := receiver.spans
+	receiver.mu.Unlock()
+	if len(milestone) != 1 || !bytes.Equal(log.TraceId, milestone[0].TraceId) || !bytes.Equal(log.SpanId, milestone[0].SpanId) {
+		t.Fatalf("log %x/%x not correlated to the milestone %v", log.TraceId, log.SpanId, milestone)
 	}
 	if log.Body.GetStringValue() != "" {
 		t.Fatalf("unexpected body: %v", log.Body)

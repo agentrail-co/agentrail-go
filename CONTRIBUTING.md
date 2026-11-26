@@ -14,6 +14,8 @@ go test -race ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 go test ./internal/handoff -run '^$' -fuzz FuzzParseAndVerify -fuzztime 10s
 scripts/check-consumer.sh
+# Beside otelhttp, Sentry and Datadog, in a module of its own:
+(cd coexistence && go test -race ./...)
 # Against a real Agentrail receiver (needs an Argus checkout, its dependencies and Docker):
 ARGUS_DIR=/path/to/argus integration/run.sh
 ```

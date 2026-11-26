@@ -156,3 +156,57 @@ marker lane, the JSON-RPC id sent in memory, no HTTP status, a status on a
 legacy SSE answer, and the names list cut inside a name or not bounded. The
 real receiver gate was not run: it sends no MCP traffic, and the Argus change
 is not merged.
+
+## 0.5.0 checks (one setup beside Sentry, Datadog and OpenTelemetry, toolchain go1.26.11)
+
+Run on macOS arm64 with go1.26.11: `gofmt`, `go mod tidy -diff`, `go build`,
+`go vet`, `go test -race -count=1 ./...` (79 tests and 98 subtests passed; the
+base revision `7f1c15e` had 77 and 98), `GOTOOLCHAIN=go1.26.0 go test ./...`,
+`GOTOOLCHAIN=go1.27.4 go test -race ./...`, the handoff fuzz target for 10
+seconds, `scripts/check-consumer.sh` (its module archive now leaves out the
+nested `coexistence` module, as a real module zip does) and `govulncheck`
+v1.9.0: no vulnerabilities found. In `coexistence/`, with `sentry-go` 0.50.0
+and `dd-trace-go` 2.12.0 (mocktracer): `go mod tidy -diff`, `go vet` and
+`go test -race -count=1 ./...` (2 tests) passed, also under go1.27.4. The new
+tests and the changed MCP overlap test also passed 20 times under race.
+
+Each test runs one request carrying the other tracer's headers through
+Agentrail's middleware, with the other tracer's middleware and transport
+outside Agentrail's, calling an ordinary origin and an allowed one; it checks
+the other tracer's trace continued, the headers each origin got, and that
+Agentrail recorded the same spans as without the other tracer. Mutations
+caught: OpenTelemetry's span cleared in the middleware again (otelhttp's
+spans lost their server span), Agentrail's span put in OpenTelemetry's slot
+for the application, the application's trace headers stripped again (otelhttp,
+Sentry and Datadog), Datadog's `x-datadog-*` headers stripped, the middleware
+dropping the request context's values (Sentry and Datadog lost their spans),
+the transport skipping calls another tracer already traces (Agentrail's
+spans stopped arriving), a milestone outside a request clearing the
+application's span, log correlation read from OpenTelemetry's span (otelhttp,
+slog and MCP tests), the application's `tracestate` kept beside Agentrail's
+traceparent, a redirect inheriting the first hop's admission, a collector
+hostname prefix taken for the collector, CLI facts copied onto outbound
+spans, `x-agentrail-cli` sent on, and log times replaced. The real receiver
+gate was not run here; `integration/capture` now sends three spans (the
+outbound call is the supporting span) to the unchanged receiver test.
+
+Review fixes (toolchain go1.26.11). A new root span is started from a context
+with no application span current, so the OTel SDK no longer counts Agentrail's
+entry or a standalone milestone among the children of otelhttp's server span or
+an application job span. `New` sets its exporters' compression (none), TLS
+(standard, never `OTEL_EXPORTER_OTLP_CERTIFICATE` or the client certificate and
+key) and its span and log record limits (the SDK defaults); headers, timeout,
+endpoint and sampler were already set. A call to the collector's own ingestion
+path is tested to lose all six trace headers and record no span. otelhttp, its
+tests and the beside-otel example moved into `coexistence/`; the root `go.mod`
+and `go.sum` are as on `main`. The Sentry and Datadog tests also run that tracer
+on the allowed origin's service and check it continued its own trace. Mutations
+caught: the application's span left current for a new root (otelhttp server
+span and job span counted 2 children), the collector branch removed or
+stripping only Agentrail's headers, compression, TLS, span limits, log record
+limits, headers, timeout and sampler each left to the environment, and an
+allowed origin losing `sentry-trace` and `baggage` or `x-datadog-parent-id`
+(the downstream trace became Agentrail's). Not fixed: the log provider merges
+`OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` into the resource of
+exported log records (`sdklog.WithResource` merges `resource.Environment()`;
+`service.name` stays Agentrail's), as on `main`.

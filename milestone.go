@@ -67,7 +67,7 @@ func (c *Client) start(ctx context.Context, name string, d MilestoneContext, mcp
 	if suppressed(ctx) {
 		return ctx, nil
 	}
-	if err := c.ready(); err != nil {
+	if c.closed.Load() {
 		c.report(ctx, "closed", "traces", 1)
 		return ctx, nil
 	}
@@ -88,23 +88,25 @@ func (c *Client) start(ctx context.Context, name string, d MilestoneContext, mcp
 		}
 		d.Performance = nil
 	}
-	if c.state(ctx) == nil {
-		external := trace.SpanContextFromContext(ctx)
-		s := &requestState{}
-		if external.IsValid() {
-			s.links = []trace.Link{{SpanContext: cleanSC(external)}}
+	state := c.state(ctx)
+	if state == nil {
+		// Outside a request the milestone is its own scope. The application's
+		// current span, another tracer's, is linked to, never trusted as parent,
+		// and stays current for the work inside the milestone.
+		state = &requestState{}
+		if external := trace.SpanContextFromContext(ctx); external.IsValid() {
+			state.links = []trace.Link{{SpanContext: cleanSC(external)}}
 		}
-		ctx = trace.ContextWithSpanContext(ctx, trace.SpanContext{})
-		ctx = context.WithValue(ctx, stateKey{c}, s)
+		ctx = context.WithValue(ctx, stateKey{c}, state)
 	}
 	m := &mark{name: name, details: d, performance: performance, mcp: mcp}
+	parent := c.parent(ctx)
 	links := []trace.Link{}
-	if !trace.SpanContextFromContext(ctx).IsValid() {
-		links = c.state(ctx).links
+	if !parent.IsValid() {
+		links = state.links
 	}
-	ctx, span := c.tp.Tracer("agentrail-go").Start(context.WithValue(ctx, markKey{c}, m), name, trace.WithLinks(links...))
-	// A mark applies only to the created span; supporting children remain ordinary spans.
-	ctx = context.WithValue(ctx, markKey{c}, (*mark)(nil))
+	// The mark reaches only this span; spans started inside it carry none.
+	ctx, span := c.startSpan(ctx, parent, name, m, trace.WithLinks(links...))
 	if !span.IsRecording() {
 		c.report(ctx, "entry_not_recording", "traces", 1)
 	}
@@ -120,9 +122,10 @@ func (c *Client) WithMilestone(ctx context.Context, name string, d MilestoneCont
 	ctx, end := c.StartMilestone(ctx, name, d)
 	defer func() {
 		if p := recover(); p != nil {
-			span := trace.SpanFromContext(ctx)
-			span.SetStatus(codes.Error, "")
-			span.SetAttributes(attribute.String("error.type", "panic"))
+			if span := c.current(ctx); span != nil {
+				span.SetStatus(codes.Error, "")
+				span.SetAttributes(attribute.String("error.type", "panic"))
+			}
 			end(nil)
 			panic(p)
 		}

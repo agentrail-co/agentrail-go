@@ -8,7 +8,8 @@
 `agentrail-go` adds your Go servers to the journeys [Agentrail](https://www.agentrail.co)
 follows: the requests your server answers, the calls it makes, the identity your
 application verified, the milestones you name, your `slog` logs and your MCP traffic.
-It is built on OpenTelemetry, registers no globals, and never sends raw identities,
+It is built on OpenTelemetry, registers no globals, runs beside Sentry, Datadog and
+your own OpenTelemetry with nothing in them to change, and never sends raw identities,
 or bodies, arguments and results, unless you turn on MCP payload capture
 (`Options.MCP.CapturePayloads`, with a required `Redact` hook).
 
@@ -85,14 +86,56 @@ so the agent's CLI runs join its journey. There is nothing to configure.
 Only the exact origins in `OutboundOrigins` receive Agentrail's trace context.
 Complete programs: [HTTP server](https://github.com/agentrail-co/agentrail-go/blob/main/examples/http/main.go),
 [MCP server](https://github.com/agentrail-co/agentrail-go/blob/main/examples/mcp/main.go),
-[existing OpenTelemetry](https://github.com/agentrail-co/agentrail-go/blob/main/examples/existing-otel/main.go).
+[beside OpenTelemetry](https://github.com/agentrail-co/agentrail-go/blob/main/coexistence/examples/beside-otel/main.go).
+
+## Beside Sentry, Datadog and OpenTelemetry
+
+A server that already runs Sentry, Datadog or its own OpenTelemetry uses the same
+setup and changes nothing in theirs. Agentrail keeps its own tracer and logger,
+registers no OpenTelemetry global, and keeps its current span in a place of its own
+in the request's context. The other tracer's spans stay where they were, its trace
+headers still reach the services you call, and Agentrail records the same spans
+with or without it. Put the other tracer's middleware and client transport outside
+Agentrail's:
+
+```go
+server := &http.Server{Addr: ":8080", Handler: otelhttp.NewHandler(capture.Middleware(mux), "orders-api")}
+inventory := &http.Client{Transport: otelhttp.NewTransport(capture.Transport(nil))}
+```
+
+Sentry's `sentryhttp` handler and `sentryhttpclient` round tripper, and Datadog's
+`httptrace.WrapHandler` and `httptrace.WrapRoundTripper`, go in the same places.
+`Transport` takes a concrete `*http.Transport` (or nil), so Agentrail's headers are
+set next to the network.
+
+On calls to any origin outside `OutboundOrigins`, the other tracer's headers
+(`traceparent`, `tracestate`, `baggage`, `sentry-trace`, `x-datadog-*`) go out as it
+set them, and Agentrail's own never do. On a call to an allowed origin, Agentrail's
+signed `traceparent` replaces the other tracer's and its `tracestate` is dropped;
+its other headers go through unchanged. One limit follows for a tracer that
+propagates by `traceparent` alone, as OpenTelemetry does by default: its trace for
+that one hop continues under Agentrail's trace ID. Sentry (`sentry-trace`) and
+Datadog (`x-datadog-*`) keep their own trace there, as their headers go through.
+
+Agentrail records only its own spans. Spans your code or its libraries start inside
+a request go to your tracer, not to Agentrail, and `trace.SpanFromContext` in a
+handler returns your tracer's span, never Agentrail's.
+
+### Upgrading from 0.4
+
+0.5.0 has one setup, `New`, for every server. Removed: `NewProcessors`, the
+`Processors` type (`SpanProcessor`, `LogProcessor`, `Propagator`, `Bind`,
+`Sampler`), `Options.Propagator` and `ErrUnbound`. Replace them with `New` and keep
+your provider as it was. Your own spans and OpenTelemetry log records are no longer
+copied to Agentrail, and calls made while answering a request now keep your trace
+headers.
 
 ## Documentation
 
 | Topic | Guide |
 | --- | --- |
 | Set up, identity, milestones, logs, MCP, location | [Install the Go SDK](https://www.agentrail.co/docs/guides/journeys-go) |
-| Every option, an existing OpenTelemetry setup, delivery and error codes | [Go SDK reference](https://www.agentrail.co/docs/guides/journeys-go-reference) |
+| Every option, Sentry, Datadog and OpenTelemetry, delivery and error codes | [Go SDK reference](https://www.agentrail.co/docs/guides/journeys-go-reference) |
 | Leaving out health checks and your own services | [Leave out your own servers](https://www.agentrail.co/docs/guides/journeys-own-servers) |
 | Workflow attempts and plugin calls | [Plugin workflow tracking](https://www.agentrail.co/docs/guides/plugin-performance) |
 | What is sent, and what never is | [What Agentrail records](https://www.agentrail.co/docs/guides/journeys-data) |

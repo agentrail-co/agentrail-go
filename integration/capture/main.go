@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,8 +18,9 @@ import (
 	"time"
 
 	agentrail "github.com/agentrail-co/agentrail-go"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
+	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 type packet struct {
@@ -69,7 +71,7 @@ func run(output string) (runErr error) {
 	}))
 	defer collector.Close()
 	var captureErrors []agentrail.CaptureError
-	processors, err := agentrail.NewProcessors(ctx, agentrail.Options{
+	client, err := agentrail.New(ctx, agentrail.Options{
 		Collector: agentrail.CollectorOptions{Endpoint: collector.URL, Secret: "synthetic-local-collector"},
 		HashKey:   "synthetic-go-receiver-hash-key", ServiceName: "synthetic-go-service", ServiceInstanceID: "synthetic-go-instance",
 		Queue: agentrail.QueueOptions{ScheduledDelay: time.Hour},
@@ -85,33 +87,21 @@ func run(output string) (runErr error) {
 	if err != nil {
 		return err
 	}
-	provider := sdktrace.NewTracerProvider(sdktrace.WithSampler(processors.Sampler(sdktrace.AlwaysSample())), sdktrace.WithSpanProcessor(processors.SpanProcessor))
-	client, err := processors.Bind(provider)
-	if err != nil {
-		return errors.Join(err, provider.Shutdown(ctx))
-	}
 	defer func() {
-		runErr = errors.Join(runErr, client.Shutdown(ctx), provider.Shutdown(ctx))
+		runErr = errors.Join(runErr, client.Shutdown(ctx))
 	}()
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 	defer target.Close()
 	outbound := &http.Client{Transport: client.Transport(nil)}
 	var handlerErr error
 	app := httptest.NewServer(client.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		result.TraceID = trace.SpanContextFromContext(r.Context()).TraceID().String()
-		result.RootSpanID = trace.SpanContextFromContext(r.Context()).SpanID().String()
 		if err := client.Identify(r.Context(), agentrail.VerifiedIdentity{Kind: agentrail.PrincipalUser, ID: "synthetic-go-user", ActingUserID: "synthetic-go-acting-user"}); err != nil {
 			handlerErr = err
 			w.WriteHeader(500)
 			return
 		}
 		handlerErr = client.WithMilestone(r.Context(), "synthetic.checkout", agentrail.MilestoneContext{Surface: agentrail.SurfaceCustom, Kind: "checkout.confirm"}, func(ctx context.Context) error {
-			result.MilestoneSpanID = trace.SpanContextFromContext(ctx).SpanID().String()
 			client.Log(ctx, agentrail.StructuredLog{SeverityNumber: 9, SeverityText: "INFO", EventName: "synthetic.milestone"})
-			ctx, supporting := provider.Tracer("synthetic-support").Start(ctx, "synthetic database work")
-			defer supporting.End()
-			result.SupportingSpanID = supporting.SpanContext().SpanID().String()
-			client.Log(ctx, agentrail.StructuredLog{SeverityNumber: 17, SeverityText: "ERROR", ErrorType: "SyntheticError", EventName: "synthetic.supporting"})
 			request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.URL+"/synthetic-target", nil)
 			if err != nil {
 				return err
@@ -120,6 +110,10 @@ func run(output string) (runErr error) {
 			if err != nil {
 				return err
 			}
+			// The outbound call's span is the supporting span beneath the
+			// milestone. The response's request is the one Agentrail sent, so
+			// its context carries that span and this log is correlated to it.
+			client.Log(response.Request.Context(), agentrail.StructuredLog{SeverityNumber: 17, SeverityText: "ERROR", ErrorType: "SyntheticError", EventName: "synthetic.supporting"})
 			return response.Body.Close()
 		})
 		if handlerErr != nil {
@@ -163,14 +157,60 @@ func run(output string) (runErr error) {
 	if len(result.Exports) < 2 {
 		return fmt.Errorf("expected traces and logs exports; got %d packets", len(result.Exports))
 	}
+	if err := identify(&result); err != nil {
+		return err
+	}
 	result.Expected.Entries = 2
-	result.Expected.Spans = 4
+	result.Expected.Spans = 3
 	result.Expected.Logs = 2
 	encoded, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(output, append(encoded, '\n'), 0600)
+}
+
+// identify reads the IDs the receiver test checks from the exported spans:
+// the request's entry, its milestone, and the outbound call beneath it.
+func identify(result *capture) error {
+	var root, milestone, supporting *tracepb.Span
+	count := 0
+	for _, packet := range result.Exports {
+		if packet.Signal != "traces" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(packet.Protobuf)
+		if err != nil {
+			return err
+		}
+		export := new(collectortrace.ExportTraceServiceRequest)
+		if err := proto.Unmarshal(raw, export); err != nil {
+			return err
+		}
+		for _, resource := range export.ResourceSpans {
+			for _, scope := range resource.ScopeSpans {
+				for _, span := range scope.Spans {
+					count++
+					switch {
+					case span.Kind == tracepb.Span_SPAN_KIND_SERVER:
+						root = span
+					case span.Name == "synthetic.checkout":
+						milestone = span
+					case span.Kind == tracepb.Span_SPAN_KIND_CLIENT:
+						supporting = span
+					}
+				}
+			}
+		}
+	}
+	if count != 3 || root == nil || milestone == nil || supporting == nil {
+		return fmt.Errorf("expected an entry, a milestone and an outbound call; got %d spans", count)
+	}
+	result.TraceID = hex.EncodeToString(root.TraceId)
+	result.RootSpanID = hex.EncodeToString(root.SpanId)
+	result.MilestoneSpanID = hex.EncodeToString(milestone.SpanId)
+	result.SupportingSpanID = hex.EncodeToString(supporting.SpanId)
+	return nil
 }
 func main() {
 	output := flag.String("output", "", "absolute or relative destination for synthetic capture")

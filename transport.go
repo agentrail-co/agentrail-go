@@ -24,11 +24,16 @@ type transport struct {
 	base   *http.Transport
 }
 
-// Transport instruments a network transport. A concrete *http.Transport keeps
-// final propagation adjacent to the network: an arbitrary nested tracing
-// RoundTripper could otherwise re-inject forbidden headers after signing.
-// A nil base uses a private standard network transport. Client redirects pass through this
-// wrapper again, so each actual destination is admitted independently.
+// Transport instruments a network transport. Inside a managed request, a call
+// keeps the application's trace headers, such as those otelhttp, Sentry or
+// Datadog set in a transport installed outside this one, and loses
+// Agentrail's own. A call to an exact allowed origin gets our signed
+// traceparent and handoff in place of the application's traceparent and
+// tracestate. A concrete *http.Transport keeps that adjacent to the network:
+// a nested tracing RoundTripper could otherwise overwrite the signed
+// traceparent after signing. A nil base uses a private standard network
+// transport. Client redirects pass through this wrapper again, so each actual
+// destination is admitted independently.
 func (c *Client) Transport(base *http.Transport) http.RoundTripper {
 	if base == nil {
 		base = defaultNetworkTransport
@@ -42,12 +47,12 @@ func (t *transport) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	if c.collectorRequest(r) {
 		copy := r.Clone(r.Context())
-		clearHeaders(copy.Header)
+		clearHeaders(copy.Header, collectorHeaders)
 		return t.base.RoundTrip(copy)
 	}
-	ctx, span := c.tp.Tracer("agentrail-go").Start(r.Context(), "HTTP "+r.Method, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attribute.String("http.request.method", r.Method), attribute.String("url.full", r.URL.String())))
+	ctx, span := c.startSpan(r.Context(), c.parent(r.Context()), "HTTP "+r.Method, nil, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attribute.String("http.request.method", r.Method), attribute.String("url.full", r.URL.String())))
 	copy := r.Clone(ctx)
-	clearHeaders(copy.Header)
+	clearHeaders(copy.Header, ownedHeaders)
 	for _, allowed := range c.options.OutboundOrigins {
 		if origin(copy.URL) == allowed {
 			sc := span.SpanContext()
@@ -60,6 +65,7 @@ func (t *transport) RoundTrip(r *http.Request) (*http.Response, error) {
 			if err != nil {
 				c.report(ctx, "handoff_refused", "context", 1)
 			} else {
+				clearHeaders(copy.Header, signedHeaders)
 				copy.Header.Set("traceparent", tp)
 				copy.Header.Set(handoffHeader, token)
 			}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,6 @@ import (
 	agentrail "github.com/agentrail-co/agentrail-go"
 	agentrailmcp "github.com/agentrail-co/agentrail-go/mcp"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"go.opentelemetry.io/otel/trace"
 )
 
 type numbered struct {
@@ -32,14 +32,10 @@ func TestOverlappingSSECallsNeverCrossParents(t *testing.T) {
 		o.MCP = agentrail.MCPOptions{CapturePayloads: true, Redact: func(p agentrail.MCPPayload) (agentrail.MCPPayload, bool) { return p, true }}
 	})
 	firstRead, secondEntered, firstEntered := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	var mu sync.Mutex
-	handlerOf := map[string]int{} // handler span ID -> the n its own request carried
 	server := sdk.NewServer(&sdk.Implementation{Name: "synthetic-server", Version: "1.0"}, nil)
 	sdk.AddTool(server, &sdk.Tool{Name: "same"}, agentrailmcp.Tool(c, "same", func(ctx context.Context, req *sdk.CallToolRequest, in numbered) (*sdk.CallToolResult, output, error) {
-		id := trace.SpanContextFromContext(ctx).SpanID()
-		mu.Lock()
-		handlerOf[hex.EncodeToString(id[:])] = in.N
-		mu.Unlock()
+		// The log is correlated to this callback's handler span, naming its n.
+		c.Log(ctx, agentrail.StructuredLog{EventName: fmt.Sprintf("n.%d", in.N)})
 		if in.N == 2 {
 			close(secondEntered)
 			<-firstEntered // still pending while the first callback looks up
@@ -85,6 +81,16 @@ func TestOverlappingSSECallsNeverCrossParents(t *testing.T) {
 	}
 	wg.Wait()
 	got := spans(t, c, receiver)
+	handlerOf := map[string]int{} // handler span ID -> the n its own request carried
+	receiver.mu.Lock()
+	for _, log := range receiver.logs {
+		var n int
+		if _, err := fmt.Sscanf(log.EventName, "n.%d", &n); err != nil {
+			t.Fatal(err)
+		}
+		handlerOf[hex.EncodeToString(log.SpanId)] = n
+	}
+	receiver.mu.Unlock()
 	transports := map[string]string{} // transport span ID -> its request payload
 	for _, s := range byLayer(t, got, "transport") {
 		transports[hex.EncodeToString(s.SpanId)] = attr(s, key(t, "requestPayload"))
