@@ -18,10 +18,14 @@ base.mkdir(parents=True)
 (base/f'{version}.mod').write_bytes((root/'go.mod').read_bytes())
 (base/f'{version}.info').write_text(json.dumps({'Version':version,'Time':'2026-11-09T00:00:00Z'}))
 (base/'list').write_text(version+'\n')
+# A directory with its own go.mod (coexistence/) is another module, which a
+# real module zip leaves out too.
+nested = [m.parent.relative_to(root) for m in root.rglob('go.mod') if m.parent != root]
 with zipfile.ZipFile(base/f'{version}.zip','w',zipfile.ZIP_DEFLATED) as z:
     for p in root.rglob('*'):
         rel=p.relative_to(root)
         if any(x in {'.git','.build','.github'} for x in rel.parts) or not p.is_file(): continue
+        if any(rel.is_relative_to(n) for n in nested): continue
         z.write(p, f'{module}@{version}/{rel.as_posix()}')
 (scratch/'version').write_text(version)
 PY
