@@ -174,6 +174,11 @@ The `coexistence` module of this repository tests this with otelhttp,
 `sentry-go` and `dd-trace-go`, and holds the beside-otel example; it is a module
 of its own so their dependencies never enter agentrail-go's.
 
+`New` sets its exporters' headers, compression, timeout and TLS (no
+certificate, client certificate or key), its sampler, and its span and log
+record limits itself, so the application's OTEL_* variables for these, which
+configure its own OpenTelemetry, never reach Agentrail's exports.
+
 0.5.0 removed the setup that put Agentrail's processors on the application's
 tracer provider: `NewProcessors`, `Processors` with its `SpanProcessor`,
 `LogProcessor`, `Propagator`, `Bind` and `Sampler`, `Options.Propagator` and

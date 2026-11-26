@@ -136,6 +136,18 @@ func (c *Client) report(ctx context.Context, code, signal string, n int) {
 	c.options.report(suppress(ctx), code, signal, n)
 }
 
+// spanLimits are the SDK's defaults, given explicitly so that the
+// application's OTEL_SPAN_* and OTEL_ATTRIBUTE_* limits never cut our spans.
+var spanLimits = sdktrace.SpanLimits{
+	AttributeValueLengthLimit:   sdktrace.DefaultAttributeValueLengthLimit,
+	AttributeValueDepthLimit:    sdktrace.DefaultAttributeValueDepthLimit,
+	AttributeCountLimit:         sdktrace.DefaultAttributeCountLimit,
+	EventCountLimit:             sdktrace.DefaultEventCountLimit,
+	LinkCountLimit:              sdktrace.DefaultLinkCountLimit,
+	AttributePerEventCountLimit: sdktrace.DefaultAttributePerEventCountLimit,
+	AttributePerLinkCountLimit:  sdktrace.DefaultAttributePerLinkCountLimit,
+}
+
 // New starts capture with tracer and logger providers of its own. It
 // registers no OpenTelemetry global and replaces nothing the application set
 // up, so it runs beside Sentry, Datadog or the application's own
@@ -145,11 +157,18 @@ func New(ctx context.Context, input Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	tx, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(o.Collector.Endpoint+"/v1/traces"), otlptracehttp.WithHeaders(map[string]string{"Authorization": "Bearer " + o.Collector.Secret}), otlptracehttp.WithTimeout(o.Queue.ExportTimeout))
+	// The application's OTEL_* variables configure its own OpenTelemetry, so
+	// every setting our exporters and providers would read from them is given
+	// here: no vendor header, compression, certificate, timeout or limit of
+	// theirs reaches our collector. A nil TLS configuration is the standard
+	// one, and still counts as given, so OTEL_EXPORTER_OTLP_CERTIFICATE and
+	// the client certificate and key variables are never read.
+	headers := map[string]string{"Authorization": "Bearer " + o.Collector.Secret}
+	tx, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(o.Collector.Endpoint+"/v1/traces"), otlptracehttp.WithHeaders(headers), otlptracehttp.WithTimeout(o.Queue.ExportTimeout), otlptracehttp.WithCompression(otlptracehttp.NoCompression), otlptracehttp.WithTLSClientConfig(nil))
 	if err != nil {
 		return nil, err
 	}
-	lx, err := otlploghttp.New(ctx, otlploghttp.WithEndpointURL(o.Collector.Endpoint+"/v1/logs"), otlploghttp.WithHeaders(map[string]string{"Authorization": "Bearer " + o.Collector.Secret}), otlploghttp.WithTimeout(o.Queue.ExportTimeout))
+	lx, err := otlploghttp.New(ctx, otlploghttp.WithEndpointURL(o.Collector.Endpoint+"/v1/logs"), otlploghttp.WithHeaders(headers), otlploghttp.WithTimeout(o.Queue.ExportTimeout), otlploghttp.WithCompression(otlploghttp.NoCompression), otlploghttp.WithTLSClientConfig(nil))
 	if err != nil {
 		return nil, errors.Join(err, tx.Shutdown(ctx))
 	}
@@ -166,9 +185,9 @@ func New(ctx context.Context, input Options) (*Client, error) {
 	c.logs = delivery.New(cfg, func(ctx context.Context, records []sdklog.Record) error { return lx.Export(suppress(ctx), records) }, func(i delivery.Issue) { c.report(context.Background(), i.Code, "logs", i.Count) })
 	sp := &spanProcessor{client: c, shutdownExporter: tx.Shutdown}
 	qp := &logQueueProcessor{client: c, shutdownExporter: lx.Shutdown}
-	c.provider = sdktrace.NewTracerProvider(sdktrace.WithResource(c.resource), sdktrace.WithSampler(sdktrace.AlwaysSample()), sdktrace.WithSpanProcessor(sp))
+	c.provider = sdktrace.NewTracerProvider(sdktrace.WithResource(c.resource), sdktrace.WithSampler(sdktrace.AlwaysSample()), sdktrace.WithRawSpanLimits(spanLimits), sdktrace.WithSpanProcessor(sp))
 	c.tracer = c.provider.Tracer("agentrail-go")
-	c.canonicalLogs = sdklog.NewLoggerProvider(sdklog.WithResource(c.resource), sdklog.WithProcessor(qp))
+	c.canonicalLogs = sdklog.NewLoggerProvider(sdklog.WithResource(c.resource), sdklog.WithAttributeCountLimit(sdktrace.DefaultAttributeCountLimit), sdklog.WithAttributeValueLengthLimit(sdktrace.DefaultAttributeValueLengthLimit), sdklog.WithProcessor(qp))
 	c.logger = c.canonicalLogs.Logger("agentrail-go")
 	c.stopSpans = sp.Shutdown
 	c.stopLogs = qp.Shutdown
