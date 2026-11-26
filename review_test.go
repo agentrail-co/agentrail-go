@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,6 +69,58 @@ func TestStandaloneMilestoneRetainsExternalDirectionalLink(t *testing.T) {
 	ss := spans(r)
 	if len(ss) != 1 || len(ss[0].Links) != 1 || len(ss[0].ParentSpanId) != 0 {
 		t.Fatal("lost directional link or trusted external parent")
+	}
+}
+
+// This fails if a call the application makes to the collector's own
+// ingestion path keeps any trace header, another tracer's or Agentrail's, or
+// is recorded as a client span of the request.
+func TestCollectorCallsCarryNoTraceHeaders(t *testing.T) {
+	var mu sync.Mutex
+	var received []http.Header
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+		if q.Method == http.MethodGet {
+			mu.Lock()
+			received = append(received, q.Header.Clone())
+			mu.Unlock()
+		}
+	}))
+	defer collector.Close()
+	c, err := agentrail.New(context.Background(), options(collector.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Shutdown(context.Background())
+	names := []string{"traceparent", "tracestate", "baggage", "sentry-trace", "x-agentrail-trace-handoff", "x-agentrail-cli"}
+	h := c.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q, err := http.NewRequestWithContext(r.Context(), http.MethodGet, collector.URL+"/ingest/otlp/v1/traces", nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		for _, name := range names {
+			q.Header.Set(name, "set-by-the-application")
+		}
+		resp, err := c.Transport(nil).RoundTrip(q)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		resp.Body.Close()
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://app.test/", nil))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("collector received %d calls", len(received))
+	}
+	for _, name := range names {
+		if received[0].Get(name) != "" {
+			t.Fatalf("collector call kept %s: %v", name, received[0])
+		}
+	}
+	if n := c.Diagnostics().Spans.Accepted; n != 1 {
+		t.Fatalf("recorded %d spans; the request's entry alone, not its collector call", n)
 	}
 }
 
